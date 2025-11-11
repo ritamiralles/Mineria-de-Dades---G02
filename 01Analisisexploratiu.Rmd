@@ -1,0 +1,268 @@
+---
+title: "Anàlisis exploratori de les dades"
+author: "G02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Avans de començar, carreguem les llibreries necessàries 
+library(visdat)
+library(inspectdf)
+library(skimr)
+library(tidyverse)
+library(plotly)
+library(tinyplot)
+library(ggplot2)
+library(psych)
+#library(exp)
+```
+
+#1.ANÀLISIS UNIVARIANT
+Farem un anàlisis univariant per tenir una visió d'inici de cadascuna de les variables
+
+#Univariant Numèriques
+```{r}
+install.packages("psych")
+library(psych)
+psych::describe(dades[, varsnum])
+```
+Observant el resum descriptiu de les v.numèriques (11 en total), tenim una primer imatge de totes elles.
+Destaquem: 
+Balance i EstimatedSalary, que presenten valors mitjans elevats i una gran variabilitat, indicant diferències econòmiques notables entre els clients. També AvgTransactionAmount mostra una variabilitat considerable, reflectint comportaments de despesa molt diversos. En canvi, ComplaintsCount té una variabilitat molt baixa, ja que la majoria de clients no registren queixes. Pel que fa al CreditScore, la mitjana és alta, fet que suggereix un bon perfil creditici general. Finalment, NetPromoterScore mostra una satisfacció mitjana amb certa dispersió, i NumOfProducts indica que la major part dels clients tenen entre un i dos productes.
+
+#gràfics
+```{r}
+library(ggplot2)
+library(psych)
+install.packages("patchwork")
+library(patchwork)
+
+par(mfrow = c(2, 3))  
+for (var in varsnum) {
+  hist(dades[, var], main = paste0("Histograma variable ", var))
+  boxplot(dades[, var], main = paste0("Boxplot variable ", var))
+}
+
+library(rlang)
+
+for (v in varsnum) {
+  p_hist <- ggplot(dades, aes(x = .data[[v]])) +
+    geom_histogram(aes(y = after_stat(density)),
+                   bins = 30, fill = "white", color = "black") +
+    geom_density(alpha = 0.25, fill = "pink") +
+    geom_vline(xintercept = mean(dades[[v]], na.rm = TRUE),
+               color = "blue", linetype = "dashed", linewidth = 1) +
+    labs(title = paste("Histograma de", v), x = v, y = "Densitat") +
+    theme_bw()
+
+    p_box <- ggplot(dades, aes(y = .data[[v]])) +
+      geom_boxplot(fill = "white") +
+      coord_flip() +
+      labs(title = paste("Boxplot de", v), x = NULL, y = v) +
+      theme_bw()
+
+  p <- p_hist + p_box + patchwork::plot_layout(widths = c(3, 2))
+  print(p)                # mostra un parell (hist+box) i segueix amb el següent
+  # Sys.sleep(0.3)        # (opcional) petita pausa per veure’ls aparèixer
+}
+```
+Un cop obtinguts tots els histogrames/boxplots de totes les variables
+destaquem:
+Queen Balance i AvgTransactionAmount tenen una distribució fortament asimètrica positiva amb la majoria de valors molt propers al 0. NumOfProducts i ComplainCount tenen una distribució discreta i asimètrica. Cal corregir
+
+
+#Univariant - Categòriques 
+```{r}
+for (var in varscat) {
+  tablaAbs <- data.frame(table(dades[, var]))
+  tablaFreq <- data.frame(table(dades[, var])/sum(table(dades[, var])))
+  m <- match(tablaAbs$Var1, tablaFreq$Var1)
+  tablaAbs[, "FreqRel"] <- tablaFreq[m, "Freq"]
+  colnames(tablaAbs) <- c("Categoria", "FreqAbs", "FreqRel")
+  
+  cat("===============", var, "===================================\n")
+  print(tablaAbs)
+  cat("==================================================\n")
+}
+```
+```{r}
+par(mfrow = c(2, 3))  # disposició de gràfics
+for (var in varscat) {
+  barplot(table(dades[[var]]),
+          main = paste("Gràfic de", var),   # <-- títol directe dins barplot()
+          col = "lightblue", border = "gray40")
+}
+par(mfrow = c(1, 1))  # restaurar configuració
+
+```
+La mostra presenta una majoria d’homes respecte a dones i una distribució geogràfica dominada per França, seguida d’Espanya. La major part dels clients pertanyen al segment “Mass Market”, amb nivell educatiu principalment d’“High School” i en menor mesura universitaris.
+
+Pel que fa a l’activitat financera, més de la meitat disposen de targeta de crèdit, tenen compte d’estalvi i no tenen préstec actiu. La participació d’usuaris actius i no actius és equilibrada. En relació amb l’estat civil, predominen els divorciats i solters, amb menys clients casats.
+
+En conjunt, el perfil majoritari és el d’un home francès del segment Mass Market, amb estudis secundaris, sense préstec actiu i amb targeta de crèdit i compte d’estalvi.
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+for (v in varscat) {
+  dades %>%
+    filter(!is.na(.data[[v]])) %>%             # Elimina els NA
+    group_by(.data[[v]]) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    mutate(pct = 100 * n / sum(n)) %>%
+    ggplot(aes(x = reorder(.data[[v]], -pct), y = pct)) +
+    geom_col(width = 0.6) +
+    geom_text(aes(label = paste0(round(pct, 1), "%")),
+              vjust = -0.4, size = 3) +
+    labs(title = paste("Percentatges -", v),
+         x = v, y = "Percentatge (%)") +
+    scale_y_continuous(limits = c(0, 100)) +
+    theme_minimal(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) -> p
+  
+  print(p)
+}
+
+```
+
+La distribució de les variables categòriques és, en general, equilibrada, tot i que s’observen algunes tendències destacades. Més de la meitat dels clients resideixen a França i la majoria es troben casats. Al voltant del 70% disposen de targeta de crèdit i més del 60% tenen un compte d’estalvi, mentre que també més del 60% han assolit un nivell educatiu universitari o superior. Finalment, només un 20% dels clients han abandonat el banc, fet que indica un grau de retenció relativament alt.
+
+#ANÀLISIS BIVARIANT 
+#bivariant: numerical vs numerical
+```{r}
+# Subset
+X <- dades[, varsnum, drop = FALSE]
+
+# Converteix a numèric si cal (i deixa NA on no es pugui convertir)
+for (nm in names(X)) if (!is.numeric(X[[nm]]))
+  X[[nm]] <- suppressWarnings(as.numeric(X[[nm]]))
+
+# Treu columnes problemàtiques: sense dades o amb sd=0
+keep <- sapply(X, function(z) sum(is.finite(z)) >= 2 && sd(z, na.rm = TRUE) > 0)
+if (any(!keep)) message("Excloses: ", paste(names(X)[!keep], collapse = ", "))
+X <- X[, keep, drop = FALSE]
+
+# Correlació tolerant a NA (usa totes les parelles disponibles)
+C <- cor(X, use = "pairwise.complete.obs", method = "pearson")
+print(C)
+
+```
+
+```{r}
+install.packages("PerformanceAnalytics")
+install.packages("ggcorrplot")
+library(ggcorrplot)
+library(PerformanceAnalytics)
+chart.Correlation(as.matrix(dades[, varsnum]),histogram = TRUE,pch=12)
+
+library(ggcorrplot)
+
+# Selecciona només les columnes demanades
+X <- dades[, varsnum, drop = FALSE]
+
+# 1) Queda’t només amb numèriques
+is_num <- sapply(X, is.numeric)
+if (any(!is_num)) message("Excloses no numèriques: ",
+                          paste(names(X)[!is_num], collapse = ", "))
+X <- X[, is_num, drop = FALSE]
+
+# 2) Elimina columnes problemàtiques: sense dades o amb variància zero
+has_data <- sapply(X, function(z) sum(is.finite(z)) >= 2)
+nzv      <- sapply(X, function(z) sd(z, na.rm = TRUE) > 0)
+keep <- has_data & nzv
+if (any(!keep)) message("Excloses sense variabilitat/poques dades: ",
+                        paste(names(X)[!keep], collapse = ", "))
+X <- X[, keep, drop = FALSE]
+
+stopifnot(ncol(X) >= 2)  # calen ≥2 variables per a un mapa de correlació
+
+# 3) Correlació tolerant a NA (parelles completes)
+corr <- cor(X, use = "pairwise.complete.obs", method = "pearson")
+
+# 4) Plot
+ggcorrplot(corr, lab = TRUE, type = "full", hc.order = TRUE)
+```
+La matriu de correlacions mostra, en general, relacions molt febles entre les variables numèriques, fet que indica baixa dependència lineal entre elles. L’única correlació rellevant és la forta relació negativa (-0,7) entre el Net Promoter Score i el ComplaintsCount, la qual cosa és coherent: a mesura que augmenten les queixes, disminueix la satisfacció del client. També s’observa una correlació moderadament negativa (-0,32) entre NumOfProducts i DigitalEngagementScore, suggerint que els clients amb més productes tendeixen a participar menys digitalment. La resta de variables, incloent balanç, salari, edat i activitat transaccional, no mostren correlacions significatives entre elles.
+
+#bivariant: categorial vs categorical
+```{r}
+library(dplyr)
+
+# Si en varscat tens "ID" o variables que no tenen sentit, les traiem
+varscat_use <- setdiff(varscat, c("ID"))
+
+par(mfrow = c(3, 3), mar = c(4, 4, 3, 1))  # ajusta si cal
+
+for (i in seq_along(varscat_use)) {
+  for (j in seq_along(varscat_use)) {
+    if (i < j) {  # només parelles úniques
+
+      v1 <- varscat_use[i]
+      v2 <- varscat_use[j]
+
+      # filtrem NAs només d'aquestes dues
+      tmp <- dades[!is.na(dades[[v1]]) & !is.na(dades[[v2]]), c(v1, v2)]
+
+      tab <- table(tmp[[v1]], tmp[[v2]])
+
+      # només dibuixem si hi ha més d'una categoria a cada costat
+      if (nrow(tab) > 1 && ncol(tab) > 1) {
+
+        # % per files: distribució de v2 dins de cada categoria de v1
+        prop <- prop.table(tab, margin = 1) * 100
+
+        barplot(t(prop),
+                beside = TRUE,
+                ylim = c(0, 100),
+                main = paste(v1, "vs", v2),
+                xlab = v2,
+                ylab = "Percentatge",
+                legend.text = rownames(prop),
+                args.legend = list(x = "topright", cex = 0.6, bty = "n"),
+                cex.names = 0.8)
+      }
+    }
+  }
+}
+
+```
+Els clients del segment Mass Market són clarament majoritaris i es caracteritzen per un nivell educatiu predominantment universitari i una presència equilibrada entre gèneres. El segment “Affluent” mostra una distribució més uniforme en educació i estat civil, mentre que els “High Net Worth” són menys freqüents i tendeixen a tenir estudis superiors i comptes d’estalvi.
+
+Pel que fa a variables de comportament, la possessió de targeta de crèdit i el fet de ser membre actiu no presenten grans diferències entre segments, tot i que els “Affluent” mostren lleugerament més activitat financera. En conjunt, les diferències més notables es troben en nivell educatiu, estat civil i ús de comptes d’estalvi, que distingeixen clarament els tres segments de clients.
+
+
+#bivariant: numerical vs categorical
+```{r}
+library(dplyr)
+
+# Si tens alguna categòrica que no vulguis (ID, etc.), la treus aquí
+varscat_use <- setdiff(varscat, c("ID","Surname"))
+
+par(mfrow = c(3, 3), mar = c(4, 4, 3, 1))
+
+for (vn in varsnum) {
+  for (vc in varscat_use) {
+    
+    # Subset i filtre de NA
+    tmp <- dades[, c(vn, vc)]
+    tmp <- tmp[!is.na(tmp[[vn]]) & !is.na(tmp[[vc]]), ]
+    
+    # Només té sentit si hi ha més d'una categoria
+    if (length(unique(tmp[[vc]])) > 1 && nrow(tmp) > 0) {
+      boxplot(tmp[[vn]] ~ tmp[[vc]],
+              main = paste(vn, "vs", vc),
+              xlab = vc,
+              ylab = vn,
+              cex.axis = 0.8)
+    }
+  }
+}
+
+```
+Els boxplots mostren que l’edat dels clients és força homogènia entre les diferents categories analitzades, sense diferències destacables. Tant entre segments de client com entre nivells educatius, gènere o país, les distribucions són similars, amb edats centrades al voltant dels 40 anys.
+
+S’observa una lleugera tendència a edats una mica més altes entre els clients sense préstec actiu i aquells amb compte d’estalvi, mentre que els més joves tendeixen a tenir targeta de crèdit i a ser membres actius. En conjunt, l’edat no mostra grans contrastos entre grups, tot i algunes diferències modestes vinculades a l’activitat financera.
+

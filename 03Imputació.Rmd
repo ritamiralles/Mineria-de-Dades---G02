@@ -1,0 +1,252 @@
+---
+title: "Imputació"
+author: "Júlia Casassas"
+date: "2025-10-14"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,echo=FALSE}
+load("/Users/mac/Downloads/bbddmineria (1).RData")
+library(naniar)
+library(ggplot2)
+library(visdat)
+library(dplyr)
+library(tidyr)
+```
+Los valores faltantes aparecen cuando una observación no tiene registrado el valor en cierta variable.
+
+Manejar correctamente los NA es esencial: eliminarlos puede reducir mucho el dataset, mientras que imputarlos incorrectamente puede introducir sesgos.
+
+Existen varias técnicas para tratar correctamente los NA:
+
+-*Eliminación* de filas/columnas con demasiados NA.
+-*Imputación simple*, por ejemplo reemplazando con la media o moda.
+-*Imputación avanzada*, como KNN o modelos predictivos.
+
+# Explorar las relacions de NA's
+Realizamos un test de little para comprobar si los NA se han generado de forma aleatoria (MCAR) o si siguen algun patrón. 
+
+H₀ (nula): Los datos son MCAR → Missing Completely At Random
+→ Los valores faltantes no dependen de nada (ni de otras variables ni de sus propios valores).
+
+H₁ (alternativa): Los datos no son MCAR, es decir, hay algún patrón no aleatorio en los valores ausentes.
+
+```{r}
+naniar::mcar_test(dades)
+```
+Debido a que el p-valor es superior a 0.05 (p.valor 0.3135119), no hay suficiente evidencia para rechazar la hipótesis nul·la. Los datos faltantes pueden considerarse completamente aleatorios (MCAR). Es decir, no hay un patrón sistemático en los valores austentes: los NAs ocurren por azar, no porque dependen de otras variables ni de los valores que toman. 
+
+A continuación se exploran las relaciones de los NA's
+```{r}
+library(visdat)
+library(ggplot2)
+library(naniar)
+```
+
+```{r}
+vis_dat(dades) #Visualitzación gràfica dels NA'S 
+```
+Se observan algunos valores faltantes (en color gris), pero distribuidos de manera aleatoria entre las observaciones y las variables, sin patrones visibles de ausencia concentrada.
+Esto coincide con el resultado del test MCAR, indicando que los datos faltantes se distribuyen completamente al azar (Missing Completely At Random).
+
+```{r}
+vis_miss(dades)
+```
+El gráfico nos proprociona el porcentaje de valores faltantes por cada variables, observamos que los valores faltantes ocupan el mismo tamaño, concretamente un 30 % en todos los atributos de la base de datos. 
+
+```{r}
+gg_miss_var(dades) + labs(y = "Look at all the missing ones")
+```
+El gráfico presenta el número de valores faltantes por cada variable. 
+
+#Imputación de los NA's
+
+La imputación básica es el proceso a través del cual los valores faltantes son substituidos con valores estimados. Se encuentran 3 técnicas aplicable con este metodo:
+ -*Imputación con la media*
+ -*Imputación con la mediana*
+ -*Imputar con un valor aleatorio*
+
+La imputación por media o mediana es adecuada para las variables numéricas.
+ 
+#Imputación por la media
+```{r}
+#Imputar los valores faltantes de cada variable numérica por su media
+test_mean <- test
+for (var in varsnum) {
+  media <- mean(dades[[var]], na.rm = TRUE)         # calcula la media ignorando los NA
+  dades[[var]][is.na(dades[[var]])] <- media         # sustituye los NA por la media
+}
+colnames(test_mean)[match(varsnum, names(test_mean))] <- paste0("imputed_mean_", varsnum)
+```
+
+#Imputación por la mediana
+```{r}
+#Imputar valores faltantes con la mediana de cada variable
+test_median <- test
+for (var in varsnum) {
+  mediana <- median(dades[[var]], na.rm = TRUE)     # calcula la mediana sin NAs
+  dades[[var]][is.na(dades[[var]])] <- mediana       # reemplaza los NA por la mediana
+}
+colnames(test_median)[match(varsnum, names(test_median))] <- paste0("imputed_median_", varsnum)
+
+# Unir todo en un único dataset
+library(dplyr)
+data_all <- bind_cols(
+  test,
+  select(test_mean, starts_with("imputed_mean_")),
+  select(test_median, starts_with("imputed_median_"))
+)
+
+# Pasar a formato largo para graficar
+library(tidyr)
+df_long_all <- data_all %>%
+  select(where(is.numeric)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "VariableCompleta",
+    values_to = "Valor"
+  ) %>%
+  mutate(
+    Tipo = case_when(
+      grepl("^imputed_mean_", VariableCompleta) ~ "Media",
+      grepl("^imputed_median_", VariableCompleta) ~ "Mediana",
+      TRUE ~ "Original"
+    ),
+    Variable = gsub("^(imputed_mean_|imputed_median_)", "", VariableCompleta)
+  )
+
+#  Visualización comparativa con ggplot2
+library(ggplot2)
+
+ggplot(df_long_all, aes(x = Valor, fill = Tipo)) +
+  geom_density(alpha = 0.3) +
+  facet_wrap(~ Variable, scales = "free") +
+  theme_minimal() +
+  labs(
+    title = "Comparación de imputación por media y mediana",
+    fill = "Tipo de dato"
+  )
+```
+
+#MI method
+
+La imputación múltiple (MI) consiste en crear varias versiones completas del conjunto de datos, en las que los valores faltantes se rellenan varias veces con valores distintos, simulando la incertidumbre sobre cuál sería el valor real.
+
+En lugar de reemplazar un NA por un único número (como la media o mediana), el método MI genera múltiples valores posibles según la distribución y relaciones entre variables.
+
+```{r}
+# Instalar y cargar Hmisc (si no lo tienes)
+library(Hmisc)
+library(dplyr)
+
+# Aplicar el método IM (impute) con la media
+test_im_mean <- dades %>%
+  mutate(across(all_of(varsnum),
+                ~ impute(., fun = mean),
+                .names = "imputed_mean_{.col}"))
+
+# Aplicar el método IM (impute) con la mediana
+test_im_median <- dades %>%
+  mutate(across(all_of(varsnum),
+                ~ impute(., fun = median),
+                .names = "imputed_median_{.col}"))
+
+# Combinar ambos resultados con el dataset original
+test_im_all <- dades %>%
+  bind_cols(
+    select(test_im_mean, starts_with("imputed_mean_")),
+    select(test_im_median, starts_with("imputed_median_"))
+  )
+
+# Verificar que las imputaciones se hayan realizado correctamente
+colSums(is.na(test_im_all))
+```
+
+En este trabajo se ha optado por imputar los datos con MICE, ya que es la técnica estadística más robusta y más rigorosa, donde la imputación debe reflejar relaciones entre variables y mantener la validez inferencial.
+
+#Imputación por MICE
+
+```{r}
+# =========================================================
+# IMPUTACIÓN MICE EXCLUYENDO 'Surname', 'ID' y 'Exited'
+# =========================================================
+
+# Cargar paquetes
+if (!require(mice)) install.packages("mice")
+if (!require(VIM)) install.packages("VIM")
+library(mice)
+library(VIM)
+library(dplyr)
+
+# Duplicar los datos originales
+datamice <- dades   
+
+#  Asegurar que los tipos de variable sean válidos para mice
+datamice <- lapply(datamice, function(x) {
+  if (is.character(x)) factor(x) else x
+})
+
+# Detectar tipos de variables
+variables_numericas   <- names(datamice)[sapply(datamice, is.numeric)]
+variables_factor      <- names(datamice)[sapply(datamice, is.factor)]
+variables_dicotomicas <- variables_factor[sapply(datamice[variables_factor], nlevels) == 2]
+variables_polinomicas <- setdiff(variables_factor, variables_dicotomicas)
+
+# Excluir solo las columnas que existen realmente
+variables_no_imputar <- c("ID", "Exited", "Surname")
+variables_no_imputar <- variables_no_imputar[variables_no_imputar %in% names(datamice)]
+
+# Crear dataset limpio sin esas columnas
+datamice_sin_surname <- datamice %>%
+  select(-all_of(variables_no_imputar))
+
+# Crear métodos y matriz de predictores
+metodos <- make.method(datamice_sin_surname)
+pred_mat <- make.predictorMatrix(datamice_sin_surname)
+
+#  Asignar métodos según tipo de variable
+metodos[variables_numericas[variables_numericas %in% names(datamice_sin_surname)]] <- "pmm"      # Predictive Mean Matching
+metodos[variables_dicotomicas[variables_dicotomicas %in% names(datamice_sin_surname)]] <- "logreg"
+metodos[variables_polinomicas[variables_polinomicas %in% names(datamice_sin_surname)]] <- "polyreg"
+
+# Ejecutar la imputación MICE
+set.seed(123)
+imputacion <- mice(
+  datamice_sin_surname,
+  m = 5,              # número de datasets imputados
+  maxit = 10,         # iteraciones
+  method = metodos,
+  predictorMatrix = pred_mat,
+  printFlag = TRUE
+)
+
+# Obtener un dataset imputado completo
+datamice_completo <- complete(imputacion, 1)
+
+# Reconstruir dataset final con las columnas no imputadas
+datamice_final <- datamice
+datamice_final[names(datamice_completo)] <- datamice_completo[names(datamice_completo)]
+
+# Visualizar si ya no hay datos faltantes
+aggr_plot <- aggr(datamice_final,
+                  col = c('navyblue', 'red'),
+                  numbers = TRUE,
+                  sortVars = TRUE,
+                  labels = names(datamice_final),
+                  cex.axis = .7,
+                  gap = 3,
+                  ylab = c("Histograma de datos faltantes", "Patrón"))
+
+print(aggr_plot)
+vis_dat(datamice_final)
+
+```
+
+```{r}
+save(test_mean,test_median,df_long_all,datamice_final, file="missings.RData")
+```
+

@@ -1,0 +1,184 @@
+---
+title: "outliers"
+output: html_document
+date: "2025-11-09"
+---
+
+# Detección de outliers univariante: variables numéricas
+```{r}
+library(lawstat)
+library(ggplot2)
+library(moments)
+library(EnvStats)
+library(here)
+library(rstudioapi)
+knitr::opts_chunk$set(echo = TRUE)
+load("/Users/mac/Downloads/bbddmineria (1).RData")
+```
+
+
+Para saber que método debemos utilitzar para detectar los outliers debemos comprobar si las variables siguen una distribución normal (simétrica). Se realiza el test de skewness (simetría) y el test de kurtosis (curtosis).
+
+```{r}
+results_moments <- data.frame(
+  Variable = character(),
+  Skewness = numeric(),
+  Kurtosis = numeric(),
+  Interpretacion = character(),
+  stringsAsFactors = FALSE
+)
+
+for (var in varsnum) {
+  x <- dades[[var]]
+  
+  s <- skewness(x, na.rm = TRUE)
+  k <- kurtosis(x, na.rm = TRUE)
+  
+  # Interpretación automática
+  interp <- if (abs(s) < 0.5 & abs(k - 3) < 1) {
+    "≈ Normal"
+  } else if (s > 0.5) {
+    "Sesgo a la derecha"
+  } else if (s < -0.5) {
+    "Sesgo a la izquierda"
+  } else {
+    "Curtosis alta o baja (no normal)"
+  }
+  
+  results_moments <- rbind(results_moments,
+                           data.frame(Variable = var,
+                                      Skewness = round(s, 3),
+                                      Kurtosis = round(k, 3),
+                                      Interpretacion = interp))
+}
+
+print(results_moments)
+```
+Para tener unos resultados más acurados, construimos histogramas que nos permitiran obtener una ilustración más visual.
+
+```{r}
+n_vars <- length(varsnum)
+ncol <- 2
+nrow <- ceiling(n_vars / ncol)
+
+par(mfrow = c(nrow, ncol), mar = c(2, 2, 1, 1))
+
+for (var in varsnum) {
+  hist(dades[[var]], 
+       main = paste(var),
+       xlab = var,
+       col = "lightblue",
+       breaks = 20)
+}
+```
+
+Mediante las pruebas estadísticas y los histogramas, observamos que ninguna variable pasa estrictament el test de normalidad (p.valor < 0.05), asi pues, todas presentan patrones con sesgos o curtosis. No obstante,las variables las variables "Credit Score", "DigitalEngagementScore" i "TransactionFrequency" son aproximadamente normales, es decir, casi simétricas y sin colas extremas. 
+
+#Outliers variables no simétricas
+Para el tratamiento de variables que no son simétricas, utilizamos el método del rango intercuartílico (IQR), es el más robusto y el que se utiliza cuando las variables no se distribuyen según una distribución normal.
+
+```{r}
+iqr_results <- data.frame(
+  Variable = character(),
+  N_Outliers = numeric(),
+  Porcentaje = numeric(),
+  Posiciones = character(),
+  stringsAsFactors = FALSE
+)
+
+for (var in varsnum) {
+  x <- dades[[var]]
+  
+  # Calcular cuartiles e IQR
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR_value <- Q3 - Q1
+  
+  # Límites inferior y superior
+  lower <- Q1 - 1.5 * IQR_value
+  upper <- Q3 + 1.5 * IQR_value
+  
+  # Detectar posiciones de los outliers
+  outlier_positions <- which(x < lower | x > upper)
+  
+  n_outliers <- length(outlier_positions)
+  pct_outliers <- round(100 * n_outliers / length(x), 2)
+  
+  # Guardar resultados
+  iqr_results <- rbind(iqr_results,
+                       data.frame(
+                         Variable = var,
+                         N_Outliers = n_outliers,
+                         Porcentaje = pct_outliers,
+                         Posiciones = paste(outlier_positions, collapse = ", ")
+                       ))
+}
+
+# Mostrar resultados
+print(iqr_results)
+```
+Observamos que las únicas variables que no tienen outliers son "EstimatedSalary","NetPromoterScore" y "Tenure".
+
+#Detección ouliters univariante: variables categóricas
+
+```{r}
+# Librerías necesarias
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(purrr)
+
+# 1️⃣ Seleccionar las variables categóricas (factores) sin "group"
+varCat_sin_group <- names(Filter(is.factor, dades))
+varCat_sin_group <- setdiff(varCat_sin_group, "group")
+
+# 2️⃣ Definir umbrales
+umbral_bajo <- 0.05   # <5% del total → categoría muy baja
+umbral_alto <- 0.90   # >90% del total → categoría dominante
+
+# 3️⃣ Crear función para analizar una variable categórica
+analizar_categoria <- function(var) {
+  dades %>%
+    count(!!sym(var)) %>%                               # contar frecuencia por categoría
+    mutate(Proporcion = n / sum(n),
+           Outlier = case_when(
+             Proporcion < umbral_bajo ~ "Muy baja",
+             Proporcion > umbral_alto ~ "Muy alta",
+             TRUE ~ "Normal"
+           ),
+           Variable = var) %>%
+    rename(Categoria = !!sym(var)) %>%
+    select(Variable, Categoria, n, Proporcion, Outlier)
+}
+
+# 4️⃣ Aplicar la función a todas las variables categóricas y unir resultados
+resumen_outliers_df <- map_df(varCat_sin_group, analizar_categoria)
+
+# 5️⃣ Mostrar la tabla completa
+View(resumen_outliers_df)
+
+# 6️⃣ Graficar automáticamente cada variable
+for (var in unique(resumen_outliers_df$Variable)) {
+  df_var <- filter(resumen_outliers_df, Variable == var)
+  
+  p <- ggplot(df_var, aes(x = Categoria, y = Proporcion, fill = Outlier)) +
+    geom_col() +
+    geom_text(aes(label = percent(Proporcion)), vjust = -0.5, size = 3) +
+    scale_fill_manual(values = c("Muy baja" = "red",
+                                 "Muy alta" = "orange",
+                                 "Normal" = "steelblue")) +
+    labs(title = paste("Distribución de", var),
+         x = NULL, y = "Proporción") +
+    theme_minimal(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p)
+}
+```
+
+
+
+
+
+
+

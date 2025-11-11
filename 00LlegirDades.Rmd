@@ -1,0 +1,71 @@
+---
+title: "LLegida de dades"
+author: "Grup 02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#LLEGIDA DADES
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Primer llegim les dues BBDD i les ordenem de la mateixa manera (per si en un futur les volem comparar)
+
+train <- read.csv2("train.csv",header=TRUE,sep=",")
+train <- subset(train, select = -X)
+train
+test <- read.csv2("test.csv",header=TRUE,sep=",")
+test
+
+train <- train[, c("ID",sort(setdiff(names(train), c("ID","Exited"))),"Exited")]
+test <- test[, c("ID", sort(setdiff(names(test), "ID")))]
+
+#per veure les dues BBDD
+train 
+test 
+```
+
+#DEFINIR VARIABLES
+```{r}
+#per treballar de manera correcta cal que definim quines variables son veritablement de cada tipus
+
+dades <- test
+#variables numèriques 
+varsnum <- c("Age","AvgTransactionAmount", "Balance", "ComplaintsCount","CreditScore","DigitalEngagementScore", "EstimatedSalary","NetPromoterScore","NumOfProducts","Tenure","TransactionFrequency")
+
+dades[varsnum] <- lapply(dades[varsnum], function(x) as.numeric(as.character(x)))
+sapply(dades[varsnum], function(x) sum(is.na(x)))
+
+#variables categòriques
+
+varscat <- setdiff(colnames(dades), varsnum)
+
+# Convertir las variables categóricas a factor
+dades[varscat] <- lapply(dades[varscat], as.factor)
+
+
+#modifiquem també les variables de train per si en un futur també volem treballar-hi (de la mateixa manera)
+
+dades1 <- train
+
+#variables numèriques 
+varsnum <- c("Age","AvgTransactionAmount", "Balance", "ComplaintsCount","CreditScore","DigitalEngagementScore", "EstimatedSalary","NetPromoterScore","NumOfProducts","Tenure","TransactionFrequency")
+
+dades1[varsnum] <- lapply(dades1[varsnum], function(x) as.numeric(as.character(x)))
+
+#variables categòriques
+
+varscat <- setdiff(colnames(dades1), varsnum)
+
+#Convertir las variables categóricas a factor
+dades1[varscat] <- lapply(dades1[varscat], as.factor)
+```
+
+#Generem un RData amb les dades que necessitem ja ben definides per treballar facilment
+```{r}
+save(train, test, dades, dades1, varsnum,varscat, file = "bbddmineria.RData")
+```
+
