@@ -1,0 +1,167 @@
+---
+title: "Naive Bayes Classificator with FAMD"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library("FactoMineR")
+library("factoextra")
+library("caret")
+library("naivebayes")
+library("ggplot2")
+library(e1071)
+library(klaR)
+```
+
+
+## Preparacio de les dades per fer el modelatge:
+```{r}
+
+#  Crear un nuevo dataframe con solo las columnas relevantes
+test_selec <- test[, c("Geography", "Balance", "Age", "IsActiveMember", "NumOfProducts", "NetPromoterScore")]
+train_selec <- train[, c("Geography", "Balance", "Age", "IsActiveMember", "NumOfProducts", "NetPromoterScore","Exited")]
+
+train_selec$Exited <- factor(train_selec$Exited,
+                                levels = c("1","0"),
+                                labels = c("Yes","No"))
+```
+
+## Partim les dades del model train, i el 70% l'utilitzem per entenar-lo i el 30% per evaluar-lo
+```{r}
+set.seed(1994)
+parametre <- createDataPartition(train_selec$Exited, p = 0.7, list = FALSE)
+train_selec2 <- train_selec[parametre, ] 
+test_selec2  <- train_selec[-parametre, ]
+
+
+```
+
+## FAMD
+```{r}
+
+# Separem predictors (X) i resposta (y)
+X_train_famd <- train_selec2[, !(names(train_selec2) %in% "Exited")]
+y_train_famd <- train_selec2$Exited
+
+X_test_famd  <- test_selec2[, !(names(test_selec2) %in% "Exited")]
+y_test_famd  <- test_selec2$Exited
+
+# Apliquem FAMD directament 
+train_famd <- FAMD(X_train_famd, graph = FALSE)
+test_famd  <- FAMD(X_test_famd,  graph = FALSE)
+
+# Scree plot per veure la variància explicada
+fviz_screeplot(train_famd, addlabels = TRUE) +
+  ggtitle("Percentatge de variància explicada (FAMD - train)")
+
+# Convertim coordenades en data frames i afegim la resposta
+train_famd_coord <- as.data.frame(train_famd$ind$coord)
+test_famd_coord  <- as.data.frame(test_famd$ind$coord)
+
+train_famd_coord$Exited <- y_train_famd
+test_famd_coord$Exited  <- y_test_famd
+
+# Harmonitzem els noms de les dimensions entre train i test
+n_dims <- min(ncol(train_famd_coord) - 1, ncol(test_famd_coord) - 1)
+dim_names <- paste0("Dim.", 1:n_dims)
+
+names(train_famd_coord)[1:n_dims] <- dim_names
+names(test_famd_coord)[1:n_dims]  <- dim_names
+
+```
+
+## Modelelatge Naive Bayes
+
+```{r, warning=FALSE}
+# Definim matrius de característiques i vectors de resposta
+X_nb_train <- train_famd_coord[, dim_names]
+y_nb_train <- train_famd_coord$Exited
+
+X_nb_test  <- test_famd_coord[, dim_names]
+y_nb_test  <- test_famd_coord$Exited
+
+# Grid senzill de paràmetres per al model Naive Bayes
+nb_grid <- expand.grid(
+  usekernel = c(TRUE, FALSE),
+  laplace   = c(0, 0.5, 1),
+  adjust    = c(0.5, 1, 1.5)
+)
+
+accuracy_vals <- numeric(nrow(nb_grid))
+
+# Bucle de validació interna sobre el train (estil "profe", però adaptat a les teves dades)
+for (i in 1:nrow(nb_grid)) {
+  modelo_nb <- naive_bayes(
+    x         = X_nb_train,
+    y         = y_nb_train,
+    usekernel = nb_grid$usekernel[i],
+    laplace   = nb_grid$laplace[i],
+    adjust    = nb_grid$adjust[i]
+  )
+  
+  pred_i <- predict(modelo_nb, X_nb_train)
+  tab_i  <- table(Real = y_nb_train, Pred = pred_i)
+  accuracy_vals[i] <- sum(diag(tab_i)) / sum(tab_i)
+}
+
+nb_grid$Accuracy <- accuracy_vals
+
+# Combincació amb millor accuracy
+nb_grid_best <- nb_grid[which.max(nb_grid$Accuracy), ]
+nb_grid_best
+# Model definitiu amb la millor combinació trobada
+modelo_nb_final <- naive_bayes(
+  x         = X_nb_train,
+  y         = y_nb_train,
+  usekernel = nb_grid_best$usekernel,
+  laplace   = nb_grid_best$laplace,
+  adjust    = nb_grid_best$adjust
+)
+
+# Prediccions sobre train i test interns
+train_pred <- predict(modelo_nb_final, X_nb_train)
+test_pred  <- predict(modelo_nb_final, X_nb_test)
+
+# Matrius de confusió
+conf_train <- confusionMatrix(train_pred, y_nb_train)
+conf_test  <- confusionMatrix(test_pred, y_nb_test)
+conf_train
+conf_test
+
+```
+
+## KPI's
+```{r}
+# Funció per calcular F1 a partir de la confusionMatrix
+f1_fun <- function(cm){
+  prec <- cm$byClass["Pos Pred Value"]
+  rec  <- cm$byClass["Sensitivity"]
+  2 * (prec * rec) / (prec + rec)
+}
+
+f1_train <- as.numeric(f1_fun(conf_train))
+f1_test  <- as.numeric(f1_fun(conf_test))
+
+# Taula resum de mètriques
+kpi_nb <- data.frame(
+  Dataset            = c("Train", "Test"),
+  Error_rate         = c(1 - conf_train$overall["Accuracy"],
+                         1 - conf_test$overall["Accuracy"]),
+  Accuracy           = c(conf_train$overall["Accuracy"],
+                         conf_test$overall["Accuracy"]),
+  Precision          = c(conf_train$byClass["Pos Pred Value"],
+                         conf_test$byClass["Pos Pred Value"]),
+  Recall_Sensitivity = c(conf_train$byClass["Sensitivity"],
+                         conf_test$byClass["Sensitivity"]),
+  Specificity        = c(conf_train$byClass["Specificity"],
+                         conf_test$byClass["Specificity"]),
+  F1_Score           = c(f1_train, f1_test)
+)
+
+kpi_nb
+
+```
+

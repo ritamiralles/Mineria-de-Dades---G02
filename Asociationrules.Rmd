@@ -1,0 +1,221 @@
+---
+title: "association rules"
+output: html_document
+date: "2025-11-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. Setup y carga de datos
+```{r }
+library(arules)
+library(arulesViz)
+library(dplyr)
+library(FactoMineR)
+```
+
+```{r}
+bank_ar <- dades1 %>%
+select(
+Geography, Gender, Age, MaritalStatus, EducationLevel,
+CreditScore, Tenure, Balance, NumOfProducts, HasCrCard,
+SavingsAccountFlag, LoanStatus,
+TransactionFrequency, AvgTransactionAmount,
+DigitalEngagementScore, EstimatedSalary,
+CustomerSegment, ComplaintsCount,
+Exited,NetPromoterScore)
+
+
+```
+
+ 
+2. Pasar todo a factores (discretizar numéricas)
+```{r}
+# 1) Variables categóricas -> factor (por si vienen como character)
+bank_ar <- bank_ar %>%
+  mutate(across(where(is.character), as.factor))
+
+# 2) Discretización de variables numéricas con cortes y nombres propios
+
+bank_ar <- bank_ar %>%
+  mutate(
+    Age_band = cut(
+      Age,
+      breaks = c(18, 30, 40, 50, 60, 100),
+      labels = c("18-29", "30-39", "40-49", "50-59", "60+"),
+      include.lowest = TRUE
+    ),
+    Tenure_band = cut(
+      Tenure,
+      breaks = c(-0.01, 2, 5, 8, 11),
+      labels = c("Tenure_bajo (0-2)", "Tenure_medio (3-5)", 
+                 "Tenure_alto (6-8)", "Tenure_muy_alto (9-10)"),
+      include.lowest = TRUE
+    ),
+    NetPromoter_band = cut(
+      NetPromoterScore,
+      breaks = c(-1, 3, 6, 8, 10),
+      labels = c("NPS_0-3", "NPS_4-6", "NPS_7-8", "NPS_9-10"),
+      include.lowest = TRUE
+    ),
+    TxFreq_band = cut(
+      TransactionFrequency,
+      breaks = c(-0.01, 20, 30, 40, Inf),
+      labels = c("Tx_0-20", "Tx_21-30", "Tx_31-40", "Tx_40+"),
+      include.lowest = TRUE
+    ),
+    Salary_band = cut(
+      EstimatedSalary,
+      breaks = quantile(EstimatedSalary, probs = c(0, 0.25, 0.5, 0.75, 1),
+                        na.rm = TRUE),
+      labels = c("Salario_Bajo", "Salario_Medio-bajo",
+                 "Salario_Medio-alto", "Salario_Alto"),
+      include.lowest = TRUE
+    ),
+    AvgAmt_band = cut(
+      AvgTransactionAmount,
+      breaks = quantile(AvgTransactionAmount, probs = c(0, 0.5, 0.8, 0.95, 1),
+                        na.rm = TRUE),
+      labels = c("Ticket_bajo", "Ticket_medio", "Ticket_alto", "Ticket_top"),
+      include.lowest = TRUE
+    ),
+    DigEng_band = cut(
+      DigitalEngagementScore,
+      breaks = c(-0.01, 25, 50, 75, 100),
+      labels = c("Eng_0-25", "Eng_26-50", "Eng_51-75", "Eng_76-100"),
+      include.lowest = TRUE
+    ),
+    CreditScore_band = cut(
+      CreditScore,
+      breaks = c(300, 580, 650, 700, 750, 850),
+      labels = c("Score_muy_bajo", "Score_bajo", "Score_medio",
+                 "Score_bueno", "Score_muy_bueno"),
+      include.lowest = TRUE
+    ),
+    Balance_band = cut(
+      Balance,
+      breaks = c(-0.01, 1000, 20000, 80000, 150000, Inf),
+      labels = c("Saldo_0-1K", "Saldo_1-20K", "Saldo_20-80K",
+                 "Saldo_80-150K", "Saldo_150K+"),
+      include.lowest = TRUE
+    ),
+    Complaints_band = cut(
+      ComplaintsCount,
+      breaks = c(-0.01, 0, 1, 3, Inf),
+      labels = c("Sin_quejas", "1_queja", "2-3_quejas", "4+_quejas"),
+      include.lowest = TRUE
+    ),
+    NumProd_band = cut(
+      NumOfProducts,
+      breaks = c(-0.01, 1, 2, 3, 4),
+      labels = c("1_producto", "2_productos", "3_productos", "4+_productos"),
+      include.lowest = TRUE
+    )
+  )
+
+# Target también como factor explícito
+bank_ar$Exited <- factor(bank_ar$Exited, levels = c(0, 1),
+                         labels = c("Stayed", "Exited"))
+
+# Nos quedamos solo con factores (las bandas + categóricas originales relevantes)
+data_ar <- bank_ar %>%
+  select(
+    Geography, Gender, MaritalStatus, EducationLevel,
+    HasCrCard, SavingsAccountFlag, LoanStatus,
+    CustomerSegment,
+    Age_band, Tenure_band, NetPromoter_band,
+    TxFreq_band, Salary_band, AvgAmt_band,
+    DigEng_band, CreditScore_band, Balance_band,
+    Complaints_band, NumProd_band,
+    Exited
+  ) %>%
+  mutate(across(everything(), as.factor))
+
+str(data_ar)
+```
+
+3. Transformación a base transaccional
+```{r}
+data_tr <- as(data_ar, "transactions")
+data_tr
+
+# Visualizamos un par de "clientes-transacción"
+inspect(data_tr[1:3])
+
+# Tamaño de las transacciones
+SIZE <- size(data_tr)
+summary(SIZE)
+```
+
+4. Soporte y confianza: elección de parámetros
+```{r}
+itemFrequencyPlot(data_tr, topN = 50, type = "absolute", cex.names = 0.7)
+```
+
+5. Itemsets y reglas de asociación
+```{r}
+# Itemsets frecuentes (para exploración)
+itemsets <- apriori(
+  data = data_tr,
+  parameter = list(
+    support = 0.015,
+    minlen = 1,
+    maxlen = 5,
+    target = "frequent itemset"
+  )
+)
+
+summary(itemsets)
+
+top_itemsets <- sort(itemsets, by = "support", decreasing = TRUE)[1:5]
+inspect(top_itemsets)
+```
+
+generamos las reglas de asociación:
+```{r}
+rules <- apriori(
+  data_tr,
+  parameter = list(
+    support   = 0.015,
+    confidence = 0.65,
+    maxlen    = 5,
+    minlen    = 2
+  )
+)
+
+summary(rules)
+```
+
+6. Eliminar reglas redundantes
+```{r}
+rules_clean <- rules[!is.redundant(rules, measure = "confidence")]
+rules_clean <- sort(rules_clean, by = "lift", decreasing = TRUE)
+
+summary(rules_clean)
+inspect(rules_clean[1:5])
+```
+
+7. Patrones de abandono (Exited = 1)
+```{r}
+rules_exit <- subset(
+  rules_clean,
+  subset = rhs %pin% "Exited=Exited"
+)
+rules_exit <- sort(rules_exit, by = "lift", decreasing = TRUE)
+
+inspect(head(rules_exit, 10))
+```
+
+8. Patrones de permanencia (Exited = 0)
+```{r}
+rules_stay <- subset(
+  rules_clean,
+  subset = rhs %pin% "Exited=Stayed"
+)
+rules_stay <- sort(rules_stay, by = "lift", decreasing = TRUE)
+
+inspect(head(rules_stay, 10))
+```
+
