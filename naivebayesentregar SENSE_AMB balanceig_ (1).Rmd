@@ -1,0 +1,198 @@
+---
+title: "naive bayes dades sense i amb  balanceig"
+output: html_document
+date: "2025-11-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+# ============================
+# NAIVE BAYES SIMPLE sobre dades_imputades
+#   - sense balanceig
+#   - amb oversampling ("up")
+# ============================
+
+library(caret)
+library(naivebayes)
+library(dplyr)
+
+# Funció per calcular F1 a partir de la confusionMatrix
+f1_fun <- function(cm){
+  prec <- as.numeric(cm$byClass["Pos Pred Value"])
+  rec  <- as.numeric(cm$byClass["Sensitivity"])
+  2 * (prec * rec) / (prec + rec)
+}
+
+run_nb_model <- function(df, nom_data, cols_drop, sampling = NULL){
+  cat("\n==========================\n")
+  cat(" Dataset:", nom_data, "| sampling =", ifelse(is.null(sampling), "sense", sampling), "\n")
+  cat("==========================\n")
+  
+  # 1) Separo train (amb Exited) i test (Kaggle)
+  d_train <- df %>% filter(Group == "train")
+  d_test  <- df %>% filter(Group == "test")
+  
+  # 2) Guardar ID del test per a la submissió
+  id_test <- d_test$ID
+  
+  # 3) Elimino columnes que no vull al model
+  d_train_mod <- d_train[, !(names(d_train) %in% cols_drop)]
+  d_test_mod  <- d_test[,  !(names(d_test)  %in% cols_drop)]
+  
+  # 4) Converteixo Exited a factor Yes/No amb nivells fixos
+  d_train_mod$Exited <- factor(
+    ifelse(as.character(d_train_mod$Exited) %in% c("1","Yes","TRUE"), "Yes", "No"),
+    levels = c("Yes","No")
+  )
+  
+  # 5) Partició interna del train (70% train2 / 30% test2)
+  set.seed(123)
+  idx <- createDataPartition(d_train_mod$Exited, p = 0.7, list = FALSE)
+  train2 <- d_train_mod[idx, ]
+  test2  <- d_train_mod[-idx, ]
+  
+  # 6) Noms de les variables predictors
+  pred_cols <- setdiff(names(d_train_mod), "Exited")
+  
+  # 7) Control d’entrenament 
+  ctrl <- trainControl(
+    method     = "repeatedcv",
+    number     = 3,    
+    repeats    = 1,
+    sampling   = sampling 
+  )
+  
+  # 8) Petita graella d’hiperparàmetres per naive_bayes
+  
+  nb_grid <- expand.grid(
+    laplace  = c(0, 1),
+    usekernel= c(FALSE, TRUE),
+    adjust   = 1
+  )
+  
+  # 9) Entreno el model sobre train2 
+  set.seed(123)
+  mod_nb <- train(
+    x         = train2[, pred_cols, drop = FALSE],
+    y         = train2$Exited,
+    method    = "naive_bayes",
+    tuneGrid  = nb_grid,
+    metric    = "Accuracy",
+    trControl = ctrl
+  )
+  
+  print(mod_nb)
+  
+  # 10) Prediccions train/test interns
+  pred_tr <- predict(mod_nb, newdata = train2[, pred_cols, drop = FALSE], type = "raw")
+  pred_te <- predict(mod_nb, newdata = test2[,  pred_cols, drop = FALSE], type = "raw")
+  
+  cm_tr <- confusionMatrix(pred_tr, train2$Exited, positive = "Yes")
+  cm_te <- confusionMatrix(pred_te, test2$Exited,  positive = "Yes")
+  
+  f1_tr <- f1_fun(cm_tr)
+  f1_te <- f1_fun(cm_te)
+  
+  kpis <- data.frame(
+    Dataset            = c("Train_intern", "Test_intern"),
+    Error_rate         = c(1 - cm_tr$overall["Accuracy"], 1 - cm_te$overall["Accuracy"]),
+    Accuracy           = c(cm_tr$overall["Accuracy"],       cm_te$overall["Accuracy"]),
+    Precision          = c(cm_tr$byClass["Pos Pred Value"], cm_te$byClass["Pos Pred Value"]),
+    Recall_Sensitivity = c(cm_tr$byClass["Sensitivity"],    cm_te$byClass["Sensitivity"]),
+    Specificity        = c(cm_tr$byClass["Specificity"],    cm_te$byClass["Specificity"]),
+    F1_Score           = c(f1_tr, f1_te)
+  )
+  
+  print(kpis)
+  
+  # 11) Re-entreno amb tot el train per generar submissió
+  set.seed(123)
+  mod_full <- train(
+    x         = d_train_mod[, pred_cols, drop = FALSE],
+    y         = d_train_mod$Exited,
+    method    = "naive_bayes",
+    tuneGrid  = mod_nb$bestTune,
+    metric    = "Accuracy",
+    trControl = ctrl
+  )
+  
+  pred_kaggle <- predict(mod_full, newdata = d_test_mod[, pred_cols, drop = FALSE], type = "raw")
+  
+  submit <- data.frame(
+    ID     = id_test,
+    Exited = pred_kaggle
+  )
+  
+  nom_fitxer <- paste0(
+    "nb_", nom_data,
+    ifelse(is.null(sampling), "_senseBalanceig", "_balanceig_up"),
+    ".csv"
+  )
+  
+  write.csv(submit, nom_fitxer, row.names = FALSE)
+  cat("\nSubmissió guardada a:", nom_fitxer, "\n")
+  
+  invisible(list(
+    model_cv   = mod_nb,
+    model_full = mod_full,
+    kpis       = kpis
+  ))
+}
+cols_drop <- c("ID", "Surname", "Group")
+
+# Sense balanceig
+res_nb_imp_sense <- run_nb_model(
+  df        = dades_imputades,
+  nom_data  = "imputades",
+  cols_drop = cols_drop,
+  sampling  = NULL
+)
+
+# Amb oversampling
+res_nb_imp_up <- run_nb_model(
+  df        = dades_imputades,
+  nom_data  = "imputades",
+  cols_drop = cols_drop,
+  sampling  = "up"
+)
+
+```
+
+```{r}
+# ============================
+# NAIVE BAYES només amb variables seleccionades
+#   Geography, Balance, Age, IsActiveMember,
+#   NumOfProducts, NetPromoterScore, Gender
+#   (amb i sense balanceig)
+# ============================
+
+# 1) Creo un dataset reduït només amb les variables d’interès
+vars_keep_sel <- c(
+  "ID", "Exited", "Group",   # per modelar i fer submissió
+  "Geography", "Balance", "Age",
+  "IsActiveMember", "NumOfProducts",
+  "NetPromoterScore", "Gender"
+)
+
+dades_nb_reduides <- dades_imputades[, vars_keep_sel]
+cols_drop_sel <- c("ID", "Group")
+
+res_nb_red_sense <- run_nb_model(
+  df        = dades_nb_reduides,
+  nom_data  = "reduides",
+  cols_drop = cols_drop_sel,
+  sampling  = NULL
+)
+
+res_nb_red_up <- run_nb_model(
+  df        = dades_nb_reduides,
+  nom_data  = "reduides",
+  cols_drop = cols_drop_sel,
+  sampling  = "up"
+)
+```

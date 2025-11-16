@@ -1,0 +1,321 @@
+---
+title: "outliers univariants numèriques"
+output: html_document
+date: "2025-11-09"
+---
+
+# Detección de outliers univariante: variables numéricas
+
+
+```{r}
+library(lawstat)
+library(ggplot2)
+library(moments)
+library(EnvStats)
+library(here)
+library(rstudioapi)
+knitr::opts_chunk$set(echo = TRUE)
+save(trainbo, testbo, dades, varsnum,varscat, file = "bbddmineria.RData")
+```
+
+
+Para saber que método debemos utilitzar para detectar los outliers debemos comprobar si las variables siguen una distribución normal (simétrica). Se realiza el test de skewness (simetría) y el test de kurtosis (curtosis).
+
+```{r}
+results_moments <- data.frame(
+  Variable = character(),
+  Skewness = numeric(),
+  Kurtosis = numeric(),
+  Interpretacion = character(),
+  stringsAsFactors = FALSE
+)
+
+for (var in varsnum) {
+  x <- dades[[var]]
+  
+  s <- skewness(x, na.rm = TRUE)
+  k <- kurtosis(x, na.rm = TRUE)
+  
+
+  interp <- if (abs(s) < 0.5 & abs(k - 3) < 1) {
+    "≈ Normal"
+  } else if (s > 0.5) {
+    "Sesgo a la derecha"
+  } else if (s < -0.5) {
+    "Sesgo a la izquierda"
+  } else {
+    "Curtosis alta o baja (no normal)"
+  }
+  
+  results_moments <- rbind(results_moments,
+                           data.frame(Variable = var,
+                                      Skewness = round(s, 3),
+                                      Kurtosis = round(k, 3),
+                                      Interpretacion = interp))
+}
+
+print(results_moments)
+```
+
+Consideramos una variables simétrica cuando la "skewness" esta dentro del intervalo [-0.5,0.5]. Así pues, según la tabla se pueden considerar simétricas las variables "Balance", "CreditScore", "DigitalEngagementScore", "EstimatedSalary", "Tenure" y "TransactionFrequency". No obstante, la variable "Balance" puede confundir, el 25% de la población tiene su cuenta en 0, mientras que el tercio restante si que sigue una distribución simétrica. 
+Las variables "NumOfProducts" y "ComplainsCount" son variables discretas, así que no se deberian aplicar métodos con cálculos numéricos. 
+
+Para tener unos resultados más gráficos y poder extraer conclusiones más sólidas construimos histogramas, estos nos permitiran obtener una imagen más visual del comportamiento de las variables.
+
+```{r}
+n_vars <- length(varsnum)
+ncol <- 2
+nrow <- ceiling(n_vars / ncol)
+
+par(mfrow = c(nrow, ncol), mar = c(2, 2, 1, 1))
+
+for (var in varsnum) {
+  hist(dades[[var]], 
+       main = paste(var),
+       xlab = var,
+       col = "lightblue",
+       breaks = 20)
+}
+```
+
+```{r}
+variables_simetricas <- c("CreditScore","EstimatedSalary","Tenure","DigitalEngagementScore","TransactionFrequency")
+variables_no_simetricas <- c("Age","AvgTransactionAmount","NetPromoterScore")
+```
+
+#Outliers variables simétricas
+Para la detección de outliers en las variables simétricas, utilitzaremos el método del rango intercuartílico (IQR), los valores que se encuentren fuera del rango, seran considerados outliers. 
+
+```{r}
+iqr_results <- data.frame(
+  Variable = character(),
+  N_Outliers = numeric(),
+  Porcentaje = numeric(),
+  Posiciones = character(),
+  stringsAsFactors = FALSE
+)
+
+for (var in variables_simetricas) {
+  x <- dades[[var]]
+  
+  # Calcular cuartiles e IQR
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR_value <- Q3 - Q1
+  
+  # Límites inferior y superior
+  lower <- Q1 - 1.5 * IQR_value
+  upper <- Q3 + 1.5 * IQR_value
+  
+  # Detectar posiciones de los outliers
+  outlier_positions <- which(x < lower | x > upper)
+  
+  n_outliers <- length(outlier_positions)
+  pct_outliers <- round(100 * n_outliers / length(x), 2)
+  
+
+  iqr_results <- rbind(iqr_results,
+                       data.frame(
+                         Variable = var,
+                         N_Outliers = n_outliers,
+                         Porcentaje = pct_outliers,
+                         Posiciones = paste(outlier_positions, collapse = ", ")
+                       ))
+}
+
+print(iqr_results)
+```
+
+Observamos que las variables "Estimated Salary" y "Tenure" no tienen outliers. El resto de variables tiene una proporción de outliers muy baja. 
+
+
+#Outliers variables no simétricas
+Para el tratamiento los outliers de variables que no son simétricas, utilizamos el método de Hampel Identifier.  Este método utiliza los estadísticos de la mediana y MAD, ya que este  este método no asume distribución normal y son resistentes a valores extremos.
+
+
+```{r}
+hampelOutlier <- function(variable, mad_constant = 1, threshold = 3.5) {
+  med <- median(variable, na.rm = TRUE)
+  mad_val <- mad(variable, constant = mad_constant, na.rm = TRUE)
+  
+  lower_bound <- med - threshold * mad_val
+  upper_bound <- med + threshold * mad_val
+  
+  which((variable < lower_bound) | (variable > upper_bound))
+}
+
+outlier_positions_non_symmetric <- list()
+proporciones_ns <- c()  
+
+for (var in variables_no_simetricas) {
+  
+  variable_vector <- dades[[var]]
+  total_n <- length(variable_vector) 
+  
+  outliers <- hampelOutlier(variable_vector)
+  
+  if (length(outliers) > 0) { 
+    outlier_positions_non_symmetric[[var]] <- outliers
+    
+    # Proporción de outliers respecto al total de observaciones de esa variable
+    proporciones_ns[var] <- length(outliers) / total_n
+    
+  } else {
+    proporciones_ns[var] <- 0
+  }
+}
+
+# Número de outliers por variable
+longitudes_ns <- sapply(outlier_positions_non_symmetric, length)
+
+longitudes_ns
+proporciones_ns
+```
+  
+Observamos que obtenemos una proporción del 4% aproximadamente de outliers por cada variable. 
+
+
+#Detección ouliters univariante: variables categóricas
+En este apartado se expone el método adiente para la detección de outliers en las variables categóricas. 
+
+```{r}
+# librerias
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# variables a tratar: 10 (sin "group")
+names(Filter(is.factor, dades))
+sum(sapply(dades, is.factor))
+varCat_sin_group_sin_group <- setdiff(varscat, "group")
+
+
+niveles_por_variable <- sapply(dades[varCat_sin_group_sin_group], function(x) length(unique(x)))
+niveles_por_variable
+
+total_modalidades <- sum(sapply(dades[varCat_sin_group], function(x) length(unique(x))))
+total_modalidades # pone 37 porque cuenta NA's como una modalidad para cada varCat
+
+# Umbrales
+umbral_bajo <- 0.05  # <1% del total
+umbral_alto <- 0.9   # >90% del total
+
+resumen_list <- list()
+for (var in varCat_sin_group) {
+  freq <- prop.table(table(dades[[var]]))
+  df_freq <- as.data.frame(freq)
+  names(df_freq) <- c("Categoria", "Proporcion")
+  
+  df_freq <- df_freq %>%
+    mutate(Outlier = case_when(
+      Proporcion < umbral_bajo ~ "Muy baja",
+      Proporcion > umbral_alto ~ "Muy alta",
+      TRUE ~ "Normal"
+    ))
+  
+  resumen_list[[var]] <- df_freq %>%
+    mutate(Variable = var) %>%
+    select(Variable, Categoria, Proporcion, Outlier)
+
+resumen_outliers_df <- bind_rows(resumen_list)
+View(resumen_outliers_df) # hay 27 modalidades
+
+
+p <- ggplot(df_freq, aes(x = Categoria, y = Proporcion, fill = Outlier)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = percent(Proporcion)), vjust = -0.5) +
+    scale_fill_manual(values = c("Muy baja" = "red", "Muy alta" = "blue", "Normal" = "green")) +
+    labs(y = "Proporción", title = paste("Distribución de", var)) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(p)
+}
+```
+
+
+#Detección Outliers multivariantes
+
+Hasta ahora, hemos estudiado los outliers por cada variable de manera individual. No obstante, a veces los outliers aparecen cuando se combinan varias variables, es por eso, que es importante hacer una detección de valores atípicos por variables mutlivariantes.
+
+Este análisis se realizara mediante la distancia de Mahalanobis. La distancia de Mahalanobis es adecuada para detectar outliers multivariantes porque mide la distancia al centro considerando simultáneamente la varianza y la covarianza entre variables. Esto corrige por diferencias de escala y correlación, permitiendo identificar observaciones anómalas que no serían detectables con métodos univariantes o Euclídeos.
+
+```{r}
+dades1 <- dades[, varsnum]
+for(v in varsnum){
+  dades1[[v]] <- as.numeric(as.character(dades1[[v]]))
+}
+
+dades2 <- na.omit(dades1)
+
+distancia_mahalanobis <- mahalanobis(
+  dades2,
+  center = colMeans(dades2),
+  cov    = cov(dades2)
+)
+
+plot(density(distancia_mahalanobis))
+```
+En este gráfico podemos observar la distribución estimada de los valores de distancia de Mahalanobis calculados a partir de las observaciones multivariantes. La mayor parte de los puntos tiene distancias entre 5-12, eso significa que la mayoría de las observaciones se encuentran relativamente cerca del centro multivariante, ajustado por la matriz de covarianzas. La distribución presenta una cola derecha larga, eso sugiere la existencia de valores atípicos. 
+
+```{r}
+cutoff <- qchisq(p = 0.99, df = ncol(dades2))
+dades2[distancia_mahalanobis>cutoff, ]
+```
+Esta table es exactame la tabla de observaciones que han sido clasificadas como outliers multivaraintes según la distancia de Mahalanobis y el umbral del 99%. Observamos edades muy elevadas junto con valores financieros inusuales, balances muy grandes comparados con el resto. Son perfiles que estadísticament no encajan con el resto de la población. 
+
+```{r}
+dades2 <- dades2[order(distancia_mahalanobis, decreasing = TRUE),]
+par(mfrow=c(1,1))
+hist(distancia_mahalanobis, 
+     main = "Histograma de distancias de Mahalanobis", 
+     xlab = "Distancia de Mahalanobis",
+     col = "grey", 
+     breaks = 30)
+abline(v = cutoff, col = "pink", lwd = 2)
+```
+El gráfico muestre la frecuencia de las distancias de Mahalanobis calculadas para todas las observaciones de la base de datos. La línea vertical rosa representa el umbral de corte, es decir, el percentil 99% de la distribución Chi-cuadrado para k variables. El histograma muestra que la mayoría de observaciones tienen distancias de Mahalanobis entre 6 y 12, lo que indica que se encuentran relativamente cerca del centro multivariante. 
+
+```{r}
+library(scatterplot3d)
+library(plotly)
+umbral <- cutoff
+
+
+dades2$outlier <- (distancia_mahalanobis > umbral)
+
+
+dades2$color <- ifelse(dades2$outlier, "blue", "black")
+
+scatterplot3d(dades2[, "Age"], 
+              dades2[, "Balance"], 
+              dades2[, "EstimatedSalary"],
+              color = dades2$color,
+              pch = 19,
+              main = "Outliers según distancia de Mahalanobis")
+
+fig <- plot_ly(dades2, 
+               x = ~Age, 
+               y = ~Balance, 
+               z = ~EstimatedSalary,
+               color = ~outlier,
+               colors = c("blue", "red"),
+               marker = list(size = 4)) %>%
+       add_markers() %>%
+       layout(title = "Outliers multivariantes (Mahalanobis)")
+fig
+
+(who <- which(dades2[, "outlier"] == TRUE))
+```
+
+```{r}
+save(results_moments,iqr_results,dades, file = "outliers.RData")
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,132 @@
+---
+title: "KNN"
+output: html_document
+date: "2025-11-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(2025)
+
+
+# Paquets
+library(dplyr)
+library(caret)
+library(pROC)
+library(ggplot2)
+
+df <- dades_imputades
+
+# 1) Split intern
+df_tr <- df %>% filter(Group == "train")
+df_te <- df %>% filter(Group == "test")
+
+# 2) Selecció de variables
+vars_x <- c("Geography", "Balance", "Age", "IsActiveMember",
+            "NumOfProducts", "NetPromoterScore","Gender")
+target <- "Exited"
+
+# 3) Preparació i neteja del target
+#    Converteixo Exited a factor amb nivells Yes/No (Yes = classe positiva)
+df_tr[[target]] <- factor(
+  ifelse(as.character(df_tr[[target]]) %in% c("1","Yes","TRUE"), "Yes", "No"),
+  levels = c("Yes","No")
+)
+
+# 4) One-hot encoding NOMÉS amb el train (per fixar columnes) i aplicar-lo al test
+#    (fullRank=TRUE evita col·linearitats perfectes)
+dmy <- caret::dummyVars(~ ., data = df_tr[, vars_x, drop = FALSE], fullRank = TRUE)
+X_tr <- as.data.frame(predict(dmy, newdata = df_tr[, vars_x, drop = FALSE]))
+X_te <- as.data.frame(predict(dmy, newdata = df_te[, vars_x, drop = FALSE]))
+
+# 5) Estandardització amb mitjanes/desviacions del TRAIN (i aplicar al TEST)
+pp <- caret::preProcess(X_tr, method = c("center","scale"))
+X_tr <- predict(pp, X_tr)
+X_te <- predict(pp, X_te)
+
+y_tr <- df_tr[[target]]
+
+# 6) Control d’entrenament (CV, probabilitats, mètrica ROC).
+
+ctrl <- trainControl(
+  method          = "repeatedcv",
+  number          = 5,
+  repeats         = 2,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary
+
+)
+
+# 7) Grid de k (imparell per evitar empats). 
+k_grid <- data.frame(k = seq(3, 41, 2))
+
+# 8) Entreno KNN optimitzant ROC (  fa la cerca del millor k)
+set.seed(2025)
+fit_knn <- caret::train(
+  x = X_tr, y = y_tr,
+  method   = "knn",
+  trControl= ctrl,
+  metric   = "ROC",
+  tuneGrid = k_grid
+)
+
+
+# 9) Prediccions sobre el conjunt Group == "test"
+pred_label <- predict(fit_knn, newdata = X_te)
+pred_prob  <- predict(fit_knn, newdata = X_te, type = "prob")[,"Yes"]
+
+library(caret)
+
+# Fem una partició interna del train: 70% train, 30% validació
+set.seed(123)
+idx <- createDataPartition(df_tr[[target]], p = 0.7, list = FALSE)
+
+X_tr_in  <- X_tr[idx, ]
+X_val_in <- X_tr[-idx, ]
+y_tr_in  <- y_tr[idx]
+y_val    <- y_tr[-idx]
+
+# Entrenem només amb el subconjunt de train intern
+set.seed(123)
+fit_knn_in <- caret::train(
+  x = X_tr_in, y = y_tr_in,
+  method    = "knn",
+  trControl = ctrl,
+  metric    = "ROC",
+  tuneGrid  = k_grid
+)
+
+# Prediccions en la validació interna
+pred_val  <- predict(fit_knn_in, newdata = X_val_in)
+prob_val  <- predict(fit_knn_in, newdata = X_val_in, type = "prob")[,"Yes"]
+
+cm_val <- confusionMatrix(pred_val, y_val, positive = "Yes")
+prec   <- cm_val$byClass["Pos Pred Value"]
+rec    <- cm_val$byClass["Sensitivity"]
+f1_val <- 2 * prec * rec / (prec + rec)
+
+auc_val <- as.numeric(pROC::auc(pROC::roc(response = y_val,
+                                          predictor = prob_val,
+                                          levels = c("No","Yes"),
+                                          direction = "<")))
+
+cat("\n===== VALIDACIÓ INTERNA AL TRAIN =====\n")
+cat("k* (CV):", fit_knn_in$bestTune$k, "\n")
+cat("Accuracy:", round(cm_val$overall["Accuracy"], 4), "\n")
+cat("Precision:", round(prec, 4), "\n")
+cat("Recall   :", round(rec, 4), "\n")
+cat("F1       :", round(f1_val, 4), "\n")
+cat("AUC      :", round(auc_val, 4), "\n")
+
+# ID per a la submissió
+submit <- data.frame(
+  ID    = if ("ID" %in% names(df_te)) df_te$ID else seq_len(nrow(df_te)),
+  Exited= ifelse(pred_prob >= 0.5, "Yes", "No")
+)
+
+write.csv(submit, "knn_submission.csv", row.names = FALSE)
+cat("\nFitxer guardat: knn_submission.csv\n")
+
+```
+
+

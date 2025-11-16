@@ -26,6 +26,8 @@ Farem un anàlisis univariant per tenir una visió d'inici de cadascuna de les v
 ```{r}
 install.packages("psych")
 library(psych)
+#carreguem el RData amb les dades (creat prèviament)
+load("bbddmineria.RData")
 psych::describe(dades[, varsnum])
 ```
 Observant el resum descriptiu de les v.numèriques (11 en total), tenim una primer imatge de totes elles.
@@ -130,6 +132,7 @@ for (v in varscat) {
 
 La distribució de les variables categòriques és, en general, equilibrada, tot i que s’observen algunes tendències destacades. Més de la meitat dels clients resideixen a França i la majoria es troben casats. Al voltant del 70% disposen de targeta de crèdit i més del 60% tenen un compte d’estalvi, mentre que també més del 60% han assolit un nivell educatiu universitari o superior. Finalment, només un 20% dels clients han abandonat el banc, fet que indica un grau de retenció relativament alt.
 
+
 #ANÀLISIS BIVARIANT 
 #bivariant: numerical vs numerical
 ```{r}
@@ -194,7 +197,7 @@ library(dplyr)
 # Si en varscat tens "ID" o variables que no tenen sentit, les traiem
 varscat_use <- setdiff(varscat, c("ID"))
 
-par(mfrow = c(3, 3), mar = c(4, 4, 3, 1))  # ajusta si cal
+par(mfrow = c(2, 1), mar = c(4, 4, 3, 1))  
 
 for (i in seq_along(varscat_use)) {
   for (j in seq_along(varscat_use)) {
@@ -233,6 +236,43 @@ Els clients del segment Mass Market són clarament majoritaris i es caracteritze
 
 Pel que fa a variables de comportament, la possessió de targeta de crèdit i el fet de ser membre actiu no presenten grans diferències entre segments, tot i que els “Affluent” mostren lleugerament més activitat financera. En conjunt, les diferències més notables es troben en nivell educatiu, estat civil i ús de comptes d’estalvi, que distingeixen clarament els tres segments de clients.
 
+#categòriques vs exited
+```{r}
+library(dplyr)
+
+# Variable categòrica única de comparació
+cat_ref <- "Exited"
+
+# Eliminem ID i també Exited de la llista, si hi és (per evitar comparar Exited amb Exited)
+varscat_use <- setdiff(varscat, c("ID", cat_ref))
+
+par(mfrow = c(2, 1), mar = c(4, 4, 3, 1))
+
+for (v in varscat_use) {
+
+  # filtrem NAs
+  tmp <- dades[!is.na(dades[[v]]) & !is.na(dades[[cat_ref]]), c(v, cat_ref)]
+
+  tab <- table(tmp[[v]], tmp[[cat_ref]])
+
+  # només dibuixem si hi ha més d'una categoria a cada costat
+  if (nrow(tab) > 1 && ncol(tab) > 1) {
+
+    # % per files: distribució de Exited dins de cada categoria de v
+    prop <- prop.table(tab, margin = 1) * 100
+
+    barplot(t(prop),
+            beside = TRUE,
+            ylim = c(0, 100),
+            main = paste(v, "vs", cat_ref),
+            xlab = cat_ref,
+            ylab = "Percentatge",
+            legend.text = rownames(prop),
+            args.legend = list(x = "topright", cex = 0.6, bty = "n"),
+            cex.names = 0.8)
+  }
+}
+```
 
 #bivariant: numerical vs categorical
 ```{r}
@@ -241,7 +281,7 @@ library(dplyr)
 # Si tens alguna categòrica que no vulguis (ID, etc.), la treus aquí
 varscat_use <- setdiff(varscat, c("ID","Surname"))
 
-par(mfrow = c(3, 3), mar = c(4, 4, 3, 1))
+par(mfrow = c(1,2), mar = c(4, 4, 3, 1))
 
 for (vn in varsnum) {
   for (vc in varscat_use) {
@@ -262,7 +302,34 @@ for (vn in varsnum) {
 }
 
 ```
+
 Els boxplots mostren que l’edat dels clients és força homogènia entre les diferents categories analitzades, sense diferències destacables. Tant entre segments de client com entre nivells educatius, gènere o país, les distribucions són similars, amb edats centrades al voltant dels 40 anys.
 
 S’observa una lleugera tendència a edats una mica més altes entre els clients sense préstec actiu i aquells amb compte d’estalvi, mentre que els més joves tendeixen a tenir targeta de crèdit i a ser membres actius. En conjunt, l’edat no mostra grans contrastos entre grups, tot i algunes diferències modestes vinculades a l’activitat financera.
+
+#numèriques vs exited
+```{r}
+library(dplyr)
+
+# Variable categòrica única
+cat_var <- "Exited"
+
+par(mfrow = c(1,2), mar = c(4, 4, 3, 1))
+
+for (vn in varsnum) {
+  
+  # Subset i filtre de NA
+  tmp <- dades[, c(vn, cat_var)]
+  tmp <- tmp[!is.na(tmp[[vn]]) & !is.na(tmp[[cat_var]]), ]
+  
+  # Només té sentit si hi ha més d'una categoria
+  if (length(unique(tmp[[cat_var]])) > 1 && nrow(tmp) > 0) {
+    boxplot(tmp[[vn]] ~ tmp[[cat_var]],
+            main = paste(vn, "vs", cat_var),
+            xlab = cat_var,
+            ylab = vn,
+            cex.axis = 0.8)
+  }
+}
+```
 
