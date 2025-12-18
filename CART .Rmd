@@ -1,0 +1,434 @@
+---
+title: "Cart mineria"
+output: html_document
+date: "2025-11-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Llegir llibreries 
+```{r}
+library(DAAG)
+library(party)
+library(rpart)
+library(rpart.plot)
+library(mlbench)
+library(caret)
+library(pROC)
+library(tree)
+library(C50)
+```
+
+#MODEL CART 
+```{R}
+#############################
+## CART COMPLET I FUNCIONAL ##
+#############################
+
+# 0) Llibreries
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(pROC)
+
+# 1) Llegir dades
+dades_imputades <- read.csv2("dades_imputades.csv", sep = ",", header = TRUE)
+
+# 2) Selecció de variables
+vars_keep_sel <- c(
+  "ID", "Exited", "Group",
+  "Geography", "Balance", "Age",
+  "IsActiveMember", "NumOfProducts",
+  "NetPromoterScore", "Gender"
+)
+
+df_small <- dades_imputades[, vars_keep_sel]
+
+# 3) Separar train i test
+d_train <- df_small[df_small$Group == "train", ]
+d_test  <- df_small[df_small$Group == "test", ]
+
+train_mod <- subset(d_train, select = -c(ID, Group))
+test_mod  <- subset(d_test,  select = -c(ID, Group))
+
+# 4) Variable resposta Exited
+train_mod$Exited <- factor(
+  ifelse(train_mod$Exited %in% c("1", "Yes", 1, TRUE), "Yes", "No"),
+  levels = c("Yes", "No")
+)
+
+# 5) Convertir variables categòriques a factor
+cols_factor <- c(
+  "Geography",
+  "Gender",
+  "IsActiveMember",
+  "NumOfProducts"
+)
+
+train_mod[cols_factor] <- lapply(train_mod[cols_factor], factor)
+test_mod[cols_factor]  <- lapply(test_mod[cols_factor], factor)
+
+cols_numeric <- c("Balance", "Age", "NetPromoterScore")
+
+train_mod[cols_numeric] <- lapply(train_mod[cols_numeric], function(x)
+  as.numeric(as.character(x))
+)
+
+test_mod[cols_numeric] <- lapply(test_mod[cols_numeric], function(x)
+  as.numeric(as.character(x))
+)
+
+# 6) Partició interna 70/30
+set.seed(1234)
+ind <- sample(seq_len(nrow(train_mod)), 0.7 * nrow(train_mod))
+
+train <- train_mod[ind, ]
+test  <- train_mod[-ind, ]
+
+# 7) Control del CART
+ctrl <- rpart.control(
+  cp = 0.001,
+  minsplit = 20,
+  minbucket = 10,
+  maxdepth = 5
+)
+
+# 8) Entrenar arbre
+tree <- rpart(
+  Exited ~ .,
+  data = train,
+  method = "class",
+  control = ctrl
+)
+
+# 9) Poda
+printcp(tree)
+plotcp(tree)
+
+xerror <- tree$cptable[, "xerror"]
+imin <- which.min(xerror)
+
+best_cp <- tree$cptable[imin, "CP"]
+tree_pruned <- prune(tree, cp = best_cp)
+
+rpart.plot(tree_pruned, type = 2, extra = 104)
+
+# 10) Importància de variables
+importance <- tree_pruned$variable.importance
+importance <- round(100 * importance / sum(importance), 1)
+importance
+
+# 11) Avaluació TRAIN
+pred_train <- predict(tree_pruned, train, type = "class")
+
+# 12) Avaluació TEST
+pred_test <- predict(tree_pruned, test, type = "class")
+
+# 13) ROC i AUC (TEST)
+p_prob <- predict(tree_pruned, test, type = "prob")[, "Yes"]
+roc_obj <- roc(test$Exited, p_prob)
+plot(roc_obj, print.auc = TRUE)
+
+# 14) Model final amb tot el train
+model_full <- rpart(
+  Exited ~ .,
+  data = train_mod,
+  method = "class",
+  control = ctrl
+)
+
+cp_full <- model_full$cptable[
+  which.min(model_full$cptable[, "xerror"]), "CP"
+]
+
+model_full_pruned <- prune(model_full, cp = cp_full)
+
+rpart.plot(model_full_pruned, type = 2, extra = 104)
+
+# 15) Prediccions Kaggle
+pred_kaggle <- predict(model_full_pruned, test_mod, type = "class")
+
+# 16) Submissió
+submit <- data.frame(
+  ID = d_test$ID,
+  Exited = pred_kaggle
+)
+
+write.csv(submit, "cart_imputades.csv", row.names = FALSE)
+
+# =====================================================
+# 17) TAULA DE MÈTRIQUES ESTÀNDARD (CART) – TRAIN / TEST
+# =====================================================
+
+# Confusion Matrix TRAIN
+cm_train <- confusionMatrix(
+  data = pred_train,
+  reference = train$Exited,
+  positive = "Yes"
+)
+
+# Confusion Matrix TEST
+cm_test <- confusionMatrix(
+  data = pred_test,
+  reference = test$Exited,
+  positive = "Yes"
+)
+
+# AUC TEST
+auc_test <- as.numeric(auc(roc_obj))
+
+# Taula final (mateix format que la resta de models)
+resultats_cart <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_test$byClass["Specificity"]
+  ),
+  Recall = c(
+    cm_train$byClass["Sensitivity"],
+    cm_test$byClass["Sensitivity"]
+  ),
+  F1 = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  ),
+  Kappa = c(
+    cm_train$overall["Kappa"],
+    cm_test$overall["Kappa"]
+  ),
+  AUC = c(
+    NA,
+    auc_test
+  )
+)
+
+print(resultats_cart)
+
+```
+
+
+
+#model cart balancejat
+```{r}
+#############################
+## CART BALANCEJAT COMPLET ##
+#############################
+
+# 0) Llibreries
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(pROC)
+
+# 1) Llegir dades
+dades_imputades <- read.csv2("dades_imputades.csv", sep = ",", header = TRUE)
+
+# 2) Selecció de variables
+vars_keep_sel <- c(
+  "ID", "Exited", "Group",
+  "Geography", "Balance", "Age",
+  "IsActiveMember", "NumOfProducts",
+  "NetPromoterScore", "Gender"
+)
+
+df_small <- dades_imputades[, vars_keep_sel]
+
+# 3) Separar train i test
+d_train <- df_small[df_small$Group == "train", ]
+d_test  <- df_small[df_small$Group == "test", ]
+
+train_mod <- subset(d_train, select = -c(ID, Group))
+test_mod  <- subset(d_test,  select = -c(ID, Group))
+
+# 4) Variable resposta Exited
+train_mod$Exited <- factor(
+  ifelse(train_mod$Exited %in% c("1", "Yes", 1, TRUE), "Yes", "No"),
+  levels = c("Yes", "No")
+)
+
+# 5) Variables categòriques
+cols_factor <- c(
+  "Geography",
+  "Gender",
+  "IsActiveMember",
+  "NumOfProducts"
+)
+
+train_mod[cols_factor] <- lapply(train_mod[cols_factor], factor)
+test_mod[cols_factor]  <- lapply(test_mod[cols_factor], factor)
+
+# 6) Variables numèriques
+cols_numeric <- c("Balance", "Age", "NetPromoterScore")
+
+train_mod[cols_numeric] <- lapply(train_mod[cols_numeric], function(x)
+  as.numeric(as.character(x))
+)
+test_mod[cols_numeric] <- lapply(test_mod[cols_numeric], function(x)
+  as.numeric(as.character(x))
+)
+
+# 7) Partició interna 70/30
+set.seed(1234)
+ind <- sample(seq_len(nrow(train_mod)), 0.7 * nrow(train_mod))
+
+train <- train_mod[ind, ]
+test  <- train_mod[-ind, ]
+
+train <- droplevels(train)
+test  <- droplevels(test)
+
+# 8) BALANCEIG AMB PESOS
+freq <- table(train$Exited)
+n <- sum(freq)
+
+w_yes <- n / (2 * freq["Yes"])
+w_no  <- n / (2 * freq["No"])
+
+weights_train <- ifelse(train$Exited == "Yes", w_yes, w_no)
+
+# 9) Control del CART
+ctrl <- rpart.control(
+  cp = 0.001,
+  minsplit = 20,
+  minbucket = 10,
+  maxdepth = 5
+)
+
+# 10) Entrenar CART balancejat
+tree <- rpart(
+  Exited ~ .,
+  data = train,
+  method = "class",
+  weights = weights_train,
+  control = ctrl
+)
+
+# 11) Poda
+printcp(tree)
+plotcp(tree)
+
+best_cp <- tree$cptable[which.min(tree$cptable[, "xerror"]), "CP"]
+tree_pruned <- prune(tree, cp = best_cp)
+
+rpart.plot(tree_pruned, type = 2, extra = 104)
+
+# 12) Importància de variables
+importance <- tree_pruned$variable.importance
+importance <- round(100 * importance / sum(importance), 1)
+importance
+
+# 13) Avaluació TRAIN
+pred_train <- predict(tree_pruned, train, type = "class")
+
+# 14) Avaluació TEST
+pred_test <- predict(tree_pruned, test, type = "class")
+
+# 15) ROC i AUC (TEST)
+p_prob <- predict(tree_pruned, test, type = "prob")[, "Yes"]
+roc_obj <- roc(test$Exited, p_prob)
+plot(roc_obj, print.auc = TRUE)
+
+# 16) Model final amb tot el train (balancejat)
+freq_full <- table(train_mod$Exited)
+n_full <- sum(freq_full)
+
+w_yes_full <- n_full / (2 * freq_full["Yes"])
+w_no_full  <- n_full / (2 * freq_full["No"])
+
+weights_full <- ifelse(train_mod$Exited == "Yes", w_yes_full, w_no_full)
+
+model_full <- rpart(
+  Exited ~ .,
+  data = train_mod,
+  method = "class",
+  weights = weights_full,
+  control = ctrl
+)
+
+cp_full <- model_full$cptable[
+  which.min(model_full$cptable[, "xerror"]), "CP"
+]
+
+model_full_pruned <- prune(model_full, cp = cp_full)
+
+rpart.plot(model_full_pruned, type = 2, extra = 104)
+
+# 17) Prediccions Kaggle
+pred_kaggle <- predict(model_full_pruned, test_mod, type = "class")
+
+# 18) Submissió
+submit <- data.frame(
+  ID = d_test$ID,
+  Exited = pred_kaggle
+)
+
+write.csv(submit, "cart_balancejat.csv", row.names = FALSE)
+
+# =====================================================
+# 19) TAULA DE MÈTRIQUES ESTÀNDARD (CART BALANCEJAT)
+#     TRAIN / TEST
+# =====================================================
+
+# Confusion Matrix TRAIN
+cm_train <- confusionMatrix(
+  data = pred_train,
+  reference = train$Exited,
+  positive = "Yes"
+)
+
+# Confusion Matrix TEST
+cm_test <- confusionMatrix(
+  data = pred_test,
+  reference = test$Exited,
+  positive = "Yes"
+)
+
+# AUC TEST
+auc_test <- as.numeric(auc(roc_obj))
+
+# Taula final (mateix format que la resta de models)
+resultats_cart_balancejat <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_test$byClass["Specificity"]
+  ),
+  Recall = c(
+    cm_train$byClass["Sensitivity"],
+    cm_test$byClass["Sensitivity"]
+  ),
+  F1 = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  ),
+  Kappa = c(
+    cm_train$overall["Kappa"],
+    cm_test$overall["Kappa"]
+  ),
+  AUC = c(
+    NA,
+    auc_test
+  )
+)
+
+print(resultats_cart_balancejat)
+
+```

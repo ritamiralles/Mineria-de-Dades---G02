@@ -1,0 +1,648 @@
+---
+title: "random forest"
+author: "Rita Miralles"
+date: "2025-12-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#paquets necessàris
+```{r}
+library(DAAG)
+library(mlbench)
+library(caret)
+library(pROC)
+library(printr)
+library(randomForest)
+library(ranger)
+```
+
+#models
+```{r}
+library(dplyr)
+library(caret)
+library(randomForest)
+library(pROC)
+
+set.seed(123)
+
+# =========================
+# 0) Llegir dades i tipus
+# =========================
+dades <- read.csv2("dades_imputades.csv", sep = ",", header = TRUE)
+
+dades$Balance              <- as.numeric(dades$Balance)
+dades$AvgTransactionAmount <- as.numeric(dades$AvgTransactionAmount)
+dades$EstimatedSalary      <- as.numeric(dades$EstimatedSalary)
+
+dades$Geography       <- factor(dades$Geography)
+dades$Gender          <- factor(dades$Gender)
+dades$CustomerSegment <- factor(dades$CustomerSegment)
+dades$EducationLevel  <- factor(dades$EducationLevel)
+dades$LoanStatus      <- factor(dades$LoanStatus)
+dades$MaritalStatus   <- factor(dades$MaritalStatus)
+
+# =========================
+# 1) Split train/test
+# =========================
+df_tr <- dades %>% filter(Group == "train")
+df_te <- dades %>% filter(Group == "test")
+
+# =========================
+# 2) Variables
+# =========================
+vars_x <- c("Geography", "Balance", "Age",
+            "IsActiveMember", "NumOfProducts",
+            "NetPromoterScore", "Gender")
+
+df_tr$Exited <- factor(df_tr$Exited, levels = c(0,1), labels = c("No","Yes"))
+
+# =========================
+# 3) Dummies
+# =========================
+dmy <- caret::dummyVars(~ ., data = df_tr[, vars_x, drop = FALSE], fullRank = TRUE)
+
+X_tr <- as.data.frame(predict(dmy, newdata = df_tr[, vars_x, drop = FALSE]))
+X_te <- as.data.frame(predict(dmy, newdata = df_te[, vars_x, drop = FALSE]))
+
+train_forest <- cbind(Exited = df_tr$Exited, X_tr)
+test_forest  <- X_te
+
+# =========================
+# 4) Validació interna 70/30
+# =========================
+idx <- createDataPartition(train_forest$Exited, p = 0.7, list = FALSE)
+train_in <- train_forest[idx, ]
+val_in   <- train_forest[-idx, ]
+
+# =========================
+# 5) BAGGING (mtry = totes)
+# =========================
+bagtrees <- randomForest(
+  Exited ~ .,
+  data = train_in,
+  mtry = ncol(train_in) - 1,
+  ntree = 500,
+  importance = TRUE
+)
+
+print(bagtrees)
+plot(bagtrees, main = "Bagging Trees - OOB Error (train_in)")
+
+# =========================
+# 6) Avaluació VALIDACIÓ
+# =========================
+pred_val <- predict(bagtrees, newdata = val_in)
+cm_val <- confusionMatrix(pred_val, val_in$Exited, positive = "Yes")
+print(cm_val)
+
+# =========================
+# 6b) ROC + AUC VALIDACIÓ
+# =========================
+probs_val <- predict(bagtrees, newdata = val_in, type = "prob")[,"Yes"]
+roc_obj <- roc(val_in$Exited, probs_val)
+auc_val <- as.numeric(auc(roc_obj))
+
+# =========================
+# 6c) TAULA DE MÈTRIQUES (TRAIN / VALIDACIÓ)
+# =========================
+
+# TRAIN (mateix model)
+pred_train <- predict(bagtrees, newdata = train_in)
+cm_train <- confusionMatrix(pred_train, train_in$Exited, positive = "Yes")
+
+resultats_bagging <- data.frame(
+  Dataset = c("Train", "Validation"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_val$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_val$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_val$byClass["Specificity"]
+  ),
+  Recall = c(
+    cm_train$byClass["Sensitivity"],
+    cm_val$byClass["Sensitivity"]
+  ),
+  F1 = c(
+    cm_train$byClass["F1"],
+    cm_val$byClass["F1"]
+  ),
+  Kappa = c(
+    cm_train$overall["Kappa"],
+    cm_val$overall["Kappa"]
+  ),
+  AUC = c(
+    NA,
+    auc_val
+  )
+)
+
+print(resultats_bagging)
+
+# =========================
+# 7) MODEL FINAL (TOT TRAIN)
+# =========================
+bagtrees_final <- randomForest(
+  Exited ~ .,
+  data = train_forest,
+  mtry = ncol(train_forest) - 1,
+  ntree = 500,
+  importance = TRUE
+)
+
+# =========================
+# 8) PREDICCIÓ TEST KAGGLE
+# =========================
+pred_test <- predict(bagtrees_final, newdata = test_forest)
+
+submission_bag <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_test
+)
+
+write.csv(submission_bag,
+          "submission_bagging_rf.csv",
+          row.names = FALSE)
+
+submission_bag
+
+```
+
+
+
+#RANDOM FOREST + CARET + VALIDACIÓ + SUBMISSION 
+````{r}
+############################################
+## RANDOM FOREST + CARET COMPLET I NET     ##
+############################################
+
+library(dplyr)
+library(caret)
+library(randomForest)
+library(pROC)
+
+set.seed(123)
+
+# =========================
+# 0) Llegir dades
+# =========================
+dades <- read.csv2("dades_imputades.csv", sep = ",", header = TRUE)
+
+dades$Balance              <- as.numeric(dades$Balance)
+dades$AvgTransactionAmount <- as.numeric(dades$AvgTransactionAmount)
+dades$EstimatedSalary      <- as.numeric(dades$EstimatedSalary)
+
+dades$Geography       <- factor(dades$Geography)
+dades$Gender          <- factor(dades$Gender)
+dades$CustomerSegment <- factor(dades$CustomerSegment)
+dades$EducationLevel  <- factor(dades$EducationLevel)
+dades$LoanStatus      <- factor(dades$LoanStatus)
+dades$MaritalStatus   <- factor(dades$MaritalStatus)
+
+# =========================
+# 1) Split train / test
+# =========================
+df_tr <- dades %>% filter(Group == "train")
+df_te <- dades %>% filter(Group == "test")
+
+df_tr$Exited <- factor(df_tr$Exited, levels = c(0,1), labels = c("No","Yes"))
+
+# =========================
+# 2) Variables
+# =========================
+vars_x <- c("Geography", "Balance", "Age",
+            "IsActiveMember", "NumOfProducts",
+            "NetPromoterScore", "Gender")
+
+# =========================
+# 3) Dummies
+# =========================
+dmy <- dummyVars(~ ., data = df_tr[, vars_x], fullRank = TRUE)
+
+X_tr <- as.data.frame(predict(dmy, df_tr[, vars_x]))
+X_te <- as.data.frame(predict(dmy, df_te[, vars_x]))
+
+train_forest <- cbind(Exited = df_tr$Exited, X_tr)
+test_forest  <- X_te
+
+# =========================
+# 4) Validació interna 70/30
+# =========================
+idx <- createDataPartition(train_forest$Exited, p = 0.7, list = FALSE)
+train_in <- train_forest[idx, ]
+val_in   <- train_forest[-idx, ]
+
+# =========================
+# 5) Control caret
+# =========================
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# =========================
+# 6) Grid mtry
+# =========================
+grid_rf <- expand.grid(
+  mtry = c(3, 5, 7)
+)
+
+# =========================
+# 7) Entrenament RF (caret)
+# =========================
+rf_caret <- train(
+  Exited ~ .,
+  data = train_in,
+  method = "rf",
+  metric = "ROC",
+  trControl = ctrl,
+  tuneGrid = grid_rf,
+  ntree = 500,
+  importance = TRUE
+)
+
+print(rf_caret)
+plot(rf_caret)
+
+# =========================
+# 8) Avaluació VALIDACIÓ
+# =========================
+pred_val <- predict(rf_caret, newdata = val_in)
+cm_val <- confusionMatrix(pred_val, val_in$Exited, positive = "Yes")
+print(cm_val)
+
+# =========================
+# 8b) ROC + AUC VALIDACIÓ
+# =========================
+probs_val <- predict(rf_caret, newdata = val_in, type = "prob")[,"Yes"]
+roc_obj <- roc(val_in$Exited, probs_val)
+auc_val <- as.numeric(auc(roc_obj))
+
+# =========================
+# 8c) TAULA MÈTRIQUES TRAIN / VALIDACIÓ
+# =========================
+
+# TRAIN (mateix model)
+pred_train <- predict(rf_caret, newdata = train_in)
+cm_train <- confusionMatrix(pred_train, train_in$Exited, positive = "Yes")
+
+resultats_rf_caret <- data.frame(
+  Dataset = c("Train", "Validation"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_val$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_val$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_val$byClass["Specificity"]
+  ),
+  Recall = c(
+    cm_train$byClass["Sensitivity"],
+    cm_val$byClass["Sensitivity"]
+  ),
+  F1 = c(
+    cm_train$byClass["F1"],
+    cm_val$byClass["F1"]
+  ),
+  Kappa = c(
+    cm_train$overall["Kappa"],
+    cm_val$overall["Kappa"]
+  ),
+  AUC = c(
+    NA,
+    auc_val
+  )
+)
+
+print(resultats_rf_caret)
+
+# =========================
+# 9) MODEL FINAL (TOT TRAIN)
+# =========================
+rf_final <- train(
+  Exited ~ .,
+  data = train_forest,
+  method = "rf",
+  metric = "ROC",
+  trControl = ctrl,
+  tuneGrid = rf_caret$bestTune,
+  ntree = 500,
+  importance = TRUE
+)
+
+# =========================
+# 10) PREDICCIÓ TEST KAGGLE
+# =========================
+pred_test <- predict(rf_final, newdata = test_forest)
+
+submission_rf_caret <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_test
+)
+
+write.csv(submission_rf_caret,
+          "submission_rf_caret.csv",
+          row.names = FALSE)
+
+submission_rf_caret
+
+````
+
+#RANDOM FOREST + CARET + MTRY OPTIMITZAT (SENSE DATA LEAKAGE)
+````{r}
+############################################
+## RANDOM FOREST + CARET + MTRY OPTIMITZAT ##
+############################################
+
+library(caret)
+library(randomForest)
+library(pROC)
+
+set.seed(123)
+
+# =========================
+# 1) Heurística mtry
+# =========================
+p <- ncol(train_in) - 1
+mtry_base <- floor(sqrt(p))
+
+tuneGrid <- expand.grid(
+  mtry = unique(floor(c(mtry_base/2, mtry_base, 2*mtry_base)))
+)
+
+# =========================
+# 2) Control caret (ROC + CV)
+# =========================
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# =========================
+# 3) Entrenament (NOMÉS train_in)
+# =========================
+rf_caret <- train(
+  Exited ~ .,
+  data = train_in,
+  method = "rf",
+  metric = "ROC",
+  tuneGrid = tuneGrid,
+  trControl = ctrl,
+  ntree = 500,
+  importance = TRUE
+)
+
+print(rf_caret)
+plot(rf_caret)
+
+# =========================
+# 4) PREDICCIONS TRAIN
+# =========================
+pred_train <- predict(rf_caret, newdata = train_in)
+cm_train <- confusionMatrix(pred_train, train_in$Exited, positive = "Yes")
+
+# =========================
+# 5) PREDICCIONS TEST (val_in)
+# =========================
+pred_test <- predict(rf_caret, newdata = val_in)
+cm_test <- confusionMatrix(pred_test, val_in$Exited, positive = "Yes")
+
+# =========================
+# 6) ROC + AUC (TEST)
+# =========================
+probs_test <- predict(rf_caret, newdata = val_in, type = "prob")[,"Yes"]
+roc_test <- roc(val_in$Exited, probs_test)
+auc_test <- as.numeric(auc(roc_test))
+
+plot(
+  roc_test,
+  print.auc = TRUE,
+  main = "ROC - Validation (RF mtry opt)"
+)
+
+# =========================
+# 7) TAULA FINAL TRAIN / TEST
+# =========================
+resultats_rf_mtry_opt <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Recall = c(
+    cm_train$byClass["Recall"],
+    cm_test$byClass["Recall"]
+  ),
+  F1 = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  ),
+  Kappa = c(
+    cm_train$overall["Kappa"],
+    cm_test$overall["Kappa"]
+  ),
+  AUC = c(
+    NA,
+    auc_test
+  )
+)
+
+print(resultats_rf_mtry_opt)
+
+# =========================
+# 8) MODEL FINAL (TOT el train)
+# =========================
+rf_final <- train(
+  Exited ~ .,
+  data = train_forest,
+  method = "rf",
+  metric = "ROC",
+  tuneGrid = rf_caret$bestTune,
+  trControl = ctrl,
+  ntree = 500,
+  importance = TRUE
+)
+
+# =========================
+# 9) PREDICCIÓ TEST KAGGLE
+# =========================
+pred_kaggle <- predict(rf_final, newdata = test_forest)
+
+submission_rf_opt <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_kaggle
+)
+
+write.csv(
+  submission_rf_opt,
+  "submission_rf_caret_mtry_opt.csv",
+  row.names = FALSE
+)
+
+submission_rf_opt
+
+````
+
+## RANDOM FOREST + CARET + SMOTE
+```{r}
+############################################
+## RANDOM FOREST + CARET + SMOTE COMPLET  ##
+############################################
+
+library(caret)
+library(randomForest)
+library(pROC)
+
+set.seed(123)
+
+# =========================
+# 1) Grid mtry (heurística)
+# =========================
+p <- ncol(train_in) - 1
+mtry_base <- floor(sqrt(p))
+
+grid_rf <- expand.grid(
+  mtry = unique(floor(c(mtry_base/2, mtry_base, 2*mtry_base)))
+)
+
+# =========================
+# 2) Control caret amb SMOTE
+# =========================
+ctrl_smote <- trainControl(
+  method = "cv",
+  number = 5,
+  sampling = "smote",
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# =========================
+# 3) Entrenament (NOMÉS train_in)
+# =========================
+rf_smote <- train(
+  Exited ~ .,
+  data = train_in,
+  method = "rf",
+  metric = "ROC",
+  tuneGrid = grid_rf,
+  trControl = ctrl_smote,
+  ntree = 500,
+  importance = TRUE
+)
+
+print(rf_smote)
+plot(rf_smote)
+
+# =========================
+# 4) PREDICCIONS TRAIN
+# =========================
+pred_train <- predict(rf_smote, newdata = train_in)
+cm_train <- confusionMatrix(pred_train, train_in$Exited, positive = "Yes")
+
+# =========================
+# 5) PREDICCIONS TEST (val_in)
+# =========================
+pred_test <- predict(rf_smote, newdata = val_in)
+cm_test <- confusionMatrix(pred_test, val_in$Exited, positive = "Yes")
+
+# =========================
+# 6) ROC + AUC (TEST)
+# =========================
+probs_test <- predict(rf_smote, newdata = val_in, type = "prob")[,"Yes"]
+roc_test <- roc(val_in$Exited, probs_test)
+auc_test <- as.numeric(auc(roc_test))
+
+plot(roc_test,
+     print.auc = TRUE,
+     main = "ROC - Validation (RF + SMOTE)")
+
+# =========================
+# 7) TAULA FINAL TRAIN / TEST
+# =========================
+resultats_rf_smote <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Recall = c(
+    cm_train$byClass["Recall"],
+    cm_test$byClass["Recall"]
+  ),
+  F1 = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  ),
+  Kappa = c(
+    cm_train$overall["Kappa"],
+    cm_test$overall["Kappa"]
+  ),
+  AUC = c(
+    NA,
+    auc_test
+  )
+)
+
+print(resultats_rf_smote)
+
+# =========================
+# 8) MODEL FINAL (TOT el train)
+# =========================
+rf_final_smote <- train(
+  Exited ~ .,
+  data = train_forest,
+  method = "rf",
+  metric = "ROC",
+  tuneGrid = rf_smote$bestTune,
+  trControl = ctrl_smote,
+  ntree = 500,
+  importance = TRUE
+)
+
+# =========================
+# 9) PREDICCIÓ TEST KAGGLE
+# =========================
+pred_kaggle <- predict(rf_final_smote, newdata = test_forest)
+
+submission_rf_smote <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_kaggle
+)
+
+write.csv(
+  submission_rf_smote,
+  "submission_rf_smote.csv",
+  row.names = FALSE
+)
+
+submission_rf_smote
+
+
+```

@@ -1,0 +1,1089 @@
+---
+title: "boosting"
+author: "Rita Miralles"
+date: "2025-12-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Boosting sense balanceig
+```{r}
+# boosting SENSE BALANCEIG
+library(dplyr)
+library(caret)
+library(xgboost)
+
+dades <- read.csv2("dades_imputades.csv", sep = ",", header = TRUE)
+dades$Balance               <- as.numeric(dades$Balance)
+dades$AvgTransactionAmount  <- as.numeric(dades$AvgTransactionAmount)
+dades$EstimatedSalary       <- as.numeric(dades$EstimatedSalary)
+
+dades$Geography       <- factor(dades$Geography)
+dades$Gender          <- factor(dades$Gender)
+dades$CustomerSegment <- factor(dades$CustomerSegment)
+dades$EducationLevel  <- factor(dades$EducationLevel)
+dades$LoanStatus      <- factor(dades$LoanStatus)
+dades$MaritalStatus   <- factor(dades$MaritalStatus)
+
+df <- dades
+
+# 1) Train / test
+df_tr <- df %>% filter(Group == "train")
+df_te <- df %>% filter(Group == "test")
+
+# 2) Variables
+vars_x <- c("Geography", "Balance", "Age",
+            "IsActiveMember", "NumOfProducts",
+            "NetPromoterScore", "Gender")
+
+# 3) Target
+df_tr$Exited <- factor(df_tr$Exited, levels = c(0,1), labels = c("No","Yes"))
+
+# 4) Dummies
+dmy <- dummyVars(~ ., data = df_tr[, vars_x], fullRank = TRUE)
+
+X_tr <- as.data.frame(predict(dmy, df_tr[, vars_x]))
+X_te <- as.data.frame(predict(dmy, df_te[, vars_x]))
+
+train_boost <- cbind(Exited = df_tr$Exited, X_tr)
+test_boost  <- X_te
+
+# =====================================================
+# ENTRENAMENT DEL MODEL (IGUAL QUE EL TEU)
+# =====================================================
+set.seed(1)
+
+trControl <- trainControl(
+  method = "cv",
+  number = 3,
+  classProbs = TRUE
+)
+
+xgb_model <- train(
+  Exited ~ .,
+  data = train_boost,
+  method = "xgbTree",
+  trControl = trControl,
+  verbosity = 0
+)
+
+xgb_model
+
+# =====================================================
+# PREDICCIONS TRAIN
+# =====================================================
+pred_train <- predict(xgb_model, newdata = train_boost)
+cm_train <- confusionMatrix(
+  pred_train,
+  train_boost$Exited,
+  positive = "Yes"
+)
+
+# =====================================================
+# PREDICCIONS TEST (sobre TRAIN intern, NO Kaggle)
+# =====================================================
+set.seed(123)
+idx <- createDataPartition(train_boost$Exited, p = 0.7, list = FALSE)
+
+train_in <- train_boost[idx, ]
+test_in  <- train_boost[-idx, ]
+
+pred_test_in <- predict(xgb_model, newdata = test_in)
+cm_test <- confusionMatrix(
+  pred_test_in,
+  test_in$Exited,
+  positive = "Yes"
+)
+
+# =====================================================
+# TAULA DE RESULTATS (COM LA IMATGE)
+# =====================================================
+resultados_xgb <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_test$byClass["Specificity"]
+  ),
+  Recall_Sensitivity = c(
+    cm_train$byClass["Sensitivity"],
+    cm_test$byClass["Sensitivity"]
+  ),
+  F1_Score = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  )
+)
+
+print(resultados_xgb)
+
+# =====================================================
+# PREDICCIÓ FINAL KAGGLE (IGUAL QUE EL TEU)
+# =====================================================
+pred_test <- predict(xgb_model, newdata = test_boost)
+
+resultats <- data.frame(
+  ID = df_te$ID,
+  Exited_pred = pred_test
+)
+
+write.csv(resultats, "prediccions_xgboost.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+# XGBOOST BALANCEJAT 
+# + TAULA DE RESULTATS TRAIN / TEST
+
+
+library(dplyr)
+library(caret)
+library(xgboost)
+
+# Pesos (IGUAL)
+w <- ifelse(train_boost$Exited == "Yes", 4, 1)
+table(train_boost$Exited, w)
+
+trControl <- trainControl(
+  method = "cv",
+  number = 3,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+set.seed(123)
+
+xgb_model_w <- train(
+  Exited ~ .,
+  data = train_boost,
+  method = "xgbTree",
+  trControl = trControl,
+  weights = w,
+  metric = "ROC",
+  verbosity = 0
+)
+
+xgb_model_w
+
+# =====================================================
+# PREDICCIÓ TRAIN
+# =====================================================
+pred_train <- predict(xgb_model_w, newdata = train_boost)
+
+cm_train <- confusionMatrix(
+  pred_train,
+  train_boost$Exited,
+  positive = "Yes"
+)
+
+# =====================================================
+# PREDICCIÓ TEST INTERN (70/30)
+# =====================================================
+set.seed(123)
+idx <- createDataPartition(train_boost$Exited, p = 0.7, list = FALSE)
+
+train_in <- train_boost[idx, ]
+test_in  <- train_boost[-idx, ]
+
+pred_test_in <- predict(xgb_model_w, newdata = test_in)
+
+cm_test <- confusionMatrix(
+  pred_test_in,
+  test_in$Exited,
+  positive = "Yes"
+)
+
+# =====================================================
+# TAULA DE RESULTATS (COM LA IMATGE)
+# =====================================================
+resultados_xgb_w <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_test$byClass["Specificity"]
+  ),
+  Recall_Sensitivity = c(
+    cm_train$byClass["Sensitivity"],
+    cm_test$byClass["Sensitivity"]
+  ),
+  F1_Score = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  )
+)
+
+print(resultados_xgb_w)
+
+# =====================================================
+# PREDICCIÓ FINAL KAGGLE (IGUAL QUE EL TEU)
+# =====================================================
+prob_test <- predict(xgb_model_w, newdata = test_boost, type = "prob")[,"Yes"]
+
+pred_test <- factor(
+  ifelse(prob_test > 0.35, "Yes", "No"),
+  levels = c("No", "Yes")
+)
+
+submission <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_test
+)
+
+write.csv(submission, "submission_boost.csv", row.names = FALSE)
+```
+
+
+#arreglat post balancejat
+```{r}
+# XGBOOST BALANCEJAT 
+# + TAULA DE RESULTATS TRAIN / TEST
+
+
+library(dplyr)
+library(caret)
+library(xgboost)
+
+set.seed(123)
+
+# ===============================
+# PESOS (IGUAL QUE EL TEU)
+# ===============================
+tab <- table(train_boost$Exited)
+
+w <- ifelse(
+  train_boost$Exited == "Yes",
+  tab["No"] / tab["Yes"],
+  1
+)
+
+# ===============================
+# CONTROL CARET (IGUAL)
+# ===============================
+trControl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# ===============================
+# ENTRENAMENT MODEL (IGUAL)
+# ===============================
+xgb_model <- train(
+  Exited ~ .,
+  data = train_boost,
+  method = "xgbTree",
+  trControl = trControl,
+  weights = w,
+  metric = "ROC",
+  tuneGrid = expand.grid(
+    nrounds = 200,
+    max_depth = 4,
+    eta = 0.05,
+    gamma = 0,
+    colsample_bytree = 0.8,
+    min_child_weight = 1,
+    subsample = 0.8
+  ),
+  verbosity = 0
+)
+
+print(xgb_model)
+
+# =====================================================
+# PREDICCIÓ TRAIN
+# =====================================================
+pred_train <- predict(
+  xgb_model,
+  newdata = train_boost,
+  type = "raw"
+)
+
+pred_train <- factor(pred_train, levels = c("No","Yes"))
+
+cm_train <- confusionMatrix(
+  data = pred_train,
+  reference = train_boost$Exited,
+  positive = "Yes"
+)
+
+print(cm_train)
+
+# =====================================================
+# PREDICCIÓ TEST INTERN (70/30)
+# =====================================================
+set.seed(123)
+idx <- createDataPartition(train_boost$Exited, p = 0.7, list = FALSE)
+
+train_in <- train_boost[idx, ]
+test_in  <- train_boost[-idx, ]
+
+pred_test_in <- predict(
+  xgb_model,
+  newdata = test_in,
+  type = "raw"
+)
+
+pred_test_in <- factor(pred_test_in, levels = c("No","Yes"))
+
+cm_test <- confusionMatrix(
+  data = pred_test_in,
+  reference = test_in$Exited,
+  positive = "Yes"
+)
+
+# =====================================================
+# TAULA DE RESULTATS (COM LA IMATGE)
+# =====================================================
+resultados_xgb_w2 <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_test$byClass["Specificity"]
+  ),
+  Recall_Sensitivity = c(
+    cm_train$byClass["Sensitivity"],
+    cm_test$byClass["Sensitivity"]
+  ),
+  F1_Score = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  )
+)
+
+print(resultados_xgb_w2)
+
+# =====================================================
+# PREDICCIÓ FINAL KAGGLE (IGUAL QUE EL TEU)
+# =====================================================
+prob_te <- predict(
+  xgb_model,
+  newdata = test_boost,
+  type = "prob"
+)[,"Yes"]
+
+pred_te <- ifelse(prob_te > 0.5, "Yes", "No")
+
+submission <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_te
+)
+
+write.csv(
+  submission,
+  "submission_xgbbfin.csv",
+  row.names = FALSE
+)
+
+```
+
+
+#un altre (BO)
+```{r}
+
+# XGBOOST BALANCEJAT + THRESHOLD ÒPTIM (KAPPA)
+# + TAULA DE RESULTATS TRAIN / TEST
+
+
+library(dplyr)
+library(caret)
+library(xgboost)
+
+# =========================
+# PESOS (IGUAL QUE EL TEU)
+# =========================
+tab <- table(train_boost$Exited)
+w <- ifelse(train_boost$Exited == "Yes", tab["No"]/tab["Yes"], 1)
+
+# =========================
+# CONTROL CV (IGUAL)
+# =========================
+trControl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# =========================
+# ENTRENAMENT XGBOOST (IGUAL)
+# =========================
+xgb_model <- train(
+  Exited ~ .,
+  data = train_boost,
+  method = "xgbTree",
+  trControl = trControl,
+  weights = w,
+  metric = "ROC",
+  tuneGrid = expand.grid(
+    nrounds = 200,
+    max_depth = 4,
+    eta = 0.05,
+    gamma = 0,
+    colsample_bytree = 0.8,
+    min_child_weight = 1,
+    subsample = 0.8
+  ),
+  verbosity = 0
+)
+
+print(xgb_model)
+
+# =========================
+# THRESHOLD ÒPTIM (MAX KAPPA) - IGUAL
+# =========================
+prob_tr <- predict(xgb_model, newdata = train_boost, type = "prob")[,"Yes"]
+
+thresholds <- seq(0.1, 0.9, by = 0.01)
+kappa_vals <- sapply(thresholds, function(t) {
+  pred_class <- factor(ifelse(prob_tr > t, "Yes", "No"), levels = c("No","Yes"))
+  cm <- confusionMatrix(pred_class, train_boost$Exited, positive = "Yes")
+  cm$overall["Kappa"]
+})
+
+best_t <- thresholds[which.max(kappa_vals)]
+cat("Best threshold (max Kappa):", best_t, "\n")
+
+# =========================
+# CONFUSION MATRIX TRAIN (threshold òptim)
+# =========================
+pred_tr_class <- factor(ifelse(prob_tr > best_t, "Yes", "No"), levels = c("No","Yes"))
+
+cm_train <- confusionMatrix(
+  pred_tr_class,
+  train_boost$Exited,
+  positive = "Yes"
+)
+
+print(cm_train)
+
+# =========================
+# CONFUSION MATRIX TEST INTERN (70/30)
+# =========================
+set.seed(123)
+idx <- createDataPartition(train_boost$Exited, p = 0.7, list = FALSE)
+
+train_in <- train_boost[idx, ]
+test_in  <- train_boost[-idx, ]
+
+prob_test_in <- predict(xgb_model, newdata = test_in, type = "prob")[,"Yes"]
+pred_test_in <- factor(ifelse(prob_test_in > best_t, "Yes", "No"),
+                       levels = c("No","Yes"))
+
+cm_test <- confusionMatrix(
+  pred_test_in,
+  test_in$Exited,
+  positive = "Yes"
+)
+
+# =========================
+# TAULA DE RESULTATS (FORMAT DEMANAT)
+# =========================
+resultados_xgb_kappa <- data.frame(
+  Dataset = c("Train", "Test"),
+  Accuracy = c(
+    cm_train$overall["Accuracy"],
+    cm_test$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_train$byClass["Precision"],
+    cm_test$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_train$byClass["Specificity"],
+    cm_test$byClass["Specificity"]
+  ),
+  Recall_Sensitivity = c(
+    cm_train$byClass["Sensitivity"],
+    cm_test$byClass["Sensitivity"]
+  ),
+  F1_Score = c(
+    cm_train$byClass["F1"],
+    cm_test$byClass["F1"]
+  )
+)
+
+print(resultados_xgb_kappa)
+
+# =========================
+# PREDICCIÓ FINAL KAGGLE (IGUAL)
+# =========================
+prob_te <- predict(xgb_model, newdata = test_boost, type = "prob")[,"Yes"]
+pred_te <- factor(ifelse(prob_te > best_t, "Yes", "No"), levels = c("No","Yes"))
+
+submission <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_te
+)
+
+write.csv(submission, "submission_xgb_threshold.csv", row.names = FALSE)
+
+```
+
+#ultim
+```{r}
+
+# XGBOOST – PIPELINE FINAL (OPTIMITZAT PER F1 / RECALL)
+# + TAULA DE RESULTATS TRAIN / VALIDACIÓ
+
+
+library(caret)
+library(xgboost)
+library(pROC)
+library(dplyr)
+
+set.seed(123)
+
+# =========================
+# 1) Split TRAIN / VALIDACIÓ
+# =========================
+idx <- createDataPartition(train_boost$Exited, p = 0.8, list = FALSE)
+train_cv <- train_boost[idx, ]
+valid_cv <- train_boost[-idx, ]
+
+# =========================
+# 2) Pesos de classe (TRAIN)
+# =========================
+tab <- table(train_cv$Exited)
+w_train <- ifelse(train_cv$Exited == "Yes",
+                  as.numeric(tab["No"] / tab["Yes"]),
+                  1)
+
+# =========================
+# 3) Control CV
+# =========================
+trControl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# =========================
+# 4) Grid XGBoost
+# =========================
+xgb_grid <- expand.grid(
+  nrounds = c(80, 120),
+  max_depth = c(3, 4),
+  eta = c(0.03, 0.05),
+  gamma = 0,
+  colsample_bytree = 0.8,
+  min_child_weight = 1,
+  subsample = 0.8
+)
+
+# =========================
+# 5) Entrenament XGBoost
+# =========================
+xgb_model <- train(
+  Exited ~ .,
+  data = train_cv,
+  method = "xgbTree",
+  trControl = trControl,
+  weights = w_train,
+  metric = "ROC",
+  tuneGrid = xgb_grid,
+  verbosity = 0
+)
+
+print(xgb_model)
+
+# =========================
+# 6) Prediccions VALIDACIÓ
+# =========================
+prob_val <- predict(xgb_model, valid_cv, type = "prob")[,"Yes"]
+
+# =========================
+# 7) Threshold ÒPTIM (F1)
+# =========================
+thresholds <- seq(0.1, 0.9, by = 0.01)
+
+f1_vals <- sapply(thresholds, function(t) {
+  pred <- factor(ifelse(prob_val > t, "Yes", "No"),
+                 levels = c("No","Yes"))
+  cm <- confusionMatrix(pred, valid_cv$Exited, positive = "Yes")
+  cm$byClass["F1"]
+})
+
+best_t <- thresholds[which.max(f1_vals)]
+cat("Best threshold (F1):", best_t, "\n")
+
+# =========================
+# 8) CONFUSION MATRIX VALIDACIÓ
+# =========================
+pred_val <- factor(ifelse(prob_val > best_t, "Yes", "No"),
+                   levels = c("No","Yes"))
+
+cm_val <- confusionMatrix(pred_val, valid_cv$Exited, positive = "Yes")
+print(cm_val)
+
+# =========================
+# 8b) CONFUSION MATRIX TRAIN
+# =========================
+prob_tr <- predict(xgb_model, train_cv, type = "prob")[,"Yes"]
+
+pred_tr <- factor(ifelse(prob_tr > best_t, "Yes", "No"),
+                  levels = c("No","Yes"))
+
+cm_train <- confusionMatrix(pred_tr, train_cv$Exited, positive = "Yes")
+
+# =========================
+# 9) TAULA DE RESULTATS (FORMAT FINAL)
+# =========================
+roc_val <- roc(valid_cv$Exited, prob_val)
+
+resultados_xgb_f1 <- data.frame(
+  Dataset     = c("Train", "Validation"),
+  Accuracy    = c(cm_train$overall["Accuracy"],
+                  cm_val$overall["Accuracy"]),
+  Precision   = c(cm_train$byClass["Precision"],
+                  cm_val$byClass["Precision"]),
+  Specificity = c(cm_train$byClass["Specificity"],
+                  cm_val$byClass["Specificity"]),
+  Recall      = c(cm_train$byClass["Sensitivity"],
+                  cm_val$byClass["Sensitivity"]),
+  F1          = c(cm_train$byClass["F1"],
+                  cm_val$byClass["F1"]),
+  AUC         = c(
+    as.numeric(auc(roc(train_cv$Exited, prob_tr))),
+    as.numeric(auc(roc_val))
+  )
+)
+
+print(resultados_xgb_f1)
+
+# =========================
+# 10) REENTRENAR AMB TOT EL TRAIN
+# =========================
+tab_full <- table(train_boost$Exited)
+w_full <- ifelse(train_boost$Exited == "Yes",
+                 as.numeric(tab_full["No"] / tab_full["Yes"]),
+                 1)
+
+final_xgb <- train(
+  Exited ~ .,
+  data = train_boost,
+  method = "xgbTree",
+  trControl = trControl,
+  weights = w_full,
+  metric = "ROC",
+  tuneGrid = xgb_model$bestTune,
+  verbosity = 0
+)
+
+# =========================
+# 11) PREDICCIÓ TEST KAGGLE
+# =========================
+prob_te <- predict(final_xgb, test_boost, type = "prob")[,"Yes"]
+
+pred_te <- factor(ifelse(prob_te > best_t, "Yes", "No"),
+                  levels = c("No","Yes"))
+
+submission <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_te
+)
+
+write.csv(submission,
+          "submission_xgb_f1_opt.csv",
+          row.names = FALSE)
+
+```
+
+
+
+```{r}
+# =========================================================
+# XGBOOST (acadèmic) + VALIDACIÓ + MÈTRIQUES + SUBMISSION
+# Optimització final orientada a Kaggle: threshold per MAX F1
+# =========================================================
+
+library(caret)
+library(xgboost)
+library(pROC)
+library(dplyr)
+
+set.seed(123)
+
+# ---------- 0) Checks mínims ----------
+stopifnot("Exited" %in% names(train_boost))
+train_boost$Exited <- factor(train_boost$Exited, levels = c("No","Yes"))
+
+# ---------- 1) Split extern TRAIN / VALIDACIÓ ----------
+idx <- createDataPartition(train_boost$Exited, p = 0.80, list = FALSE)
+train_cv <- train_boost[idx, ]
+valid_cv <- train_boost[-idx, ]
+train_cv$Exited <- factor(train_cv$Exited, levels = c("No","Yes"))
+valid_cv$Exited <- factor(valid_cv$Exited, levels = c("No","Yes"))
+
+# ---------- 2) Pesos de classe ----------
+tab <- table(train_cv$Exited)
+w_train <- ifelse(train_cv$Exited == "Yes",
+                  as.numeric(tab["No"]/tab["Yes"]),
+                  1)
+
+# ---------- 3) Control CV ----------
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final",
+  allowParallel = TRUE
+)
+
+# ---------- 4) Grid ----------
+xgb_grid <- expand.grid(
+  nrounds = c(80, 120, 160),
+  max_depth = c(3, 4, 5),
+  eta = c(0.03, 0.05, 0.1),
+  gamma = c(0, 1),
+  colsample_bytree = c(0.7, 0.8),
+  min_child_weight = c(1, 5),
+  subsample = c(0.7, 0.8)
+)
+
+# ---------- 5) Entrenament ----------
+xgb_model <- train(
+  Exited ~ .,
+  data = train_cv,
+  method = "xgbTree",
+  trControl = ctrl,
+  tuneGrid = xgb_grid,
+  metric = "ROC",
+  weights = w_train,
+  verbosity = 0
+)
+
+print(xgb_model)
+
+# ---------- 6) Probabilitats VALIDACIÓ ----------
+prob_val <- predict(xgb_model, valid_cv, type = "prob")[,"Yes"]
+
+# ---------- 7) Threshold per MAX F1 ----------
+thresholds <- seq(0.05, 0.60, by = 0.01)
+
+f1_vals <- sapply(thresholds, function(t){
+  pred <- factor(ifelse(prob_val >= t, "Yes", "No"),
+                 levels = c("No","Yes"))
+  cm <- confusionMatrix(pred, valid_cv$Exited, positive = "Yes")
+  as.numeric(cm$byClass["F1"])
+})
+
+best_t <- thresholds[which.max(f1_vals)]
+cat("Best threshold (max F1) =", best_t, "\n")
+
+# ---------- 8) Mètriques VALIDACIÓ ----------
+pred_val <- factor(ifelse(prob_val >= best_t, "Yes", "No"),
+                   levels = c("No","Yes"))
+cm_val <- confusionMatrix(pred_val, valid_cv$Exited, positive = "Yes")
+
+roc_val <- roc(valid_cv$Exited, prob_val)
+auc_val <- as.numeric(auc(roc_val))
+
+# ---------- 8b) Mètriques TRAIN ----------
+prob_tr <- predict(xgb_model, train_cv, type = "prob")[,"Yes"]
+pred_tr <- factor(ifelse(prob_tr >= best_t, "Yes", "No"),
+                  levels = c("No","Yes"))
+cm_tr <- confusionMatrix(pred_tr, train_cv$Exited, positive = "Yes")
+
+# ---------- 9) TAULA DE RESULTATS (FORMAT FINAL) ----------
+resultats_xgb <- data.frame(
+  Dataset = c("Train", "Validation"),
+  Accuracy = c(
+    cm_tr$overall["Accuracy"],
+    cm_val$overall["Accuracy"]
+  ),
+  Precision = c(
+    cm_tr$byClass["Precision"],
+    cm_val$byClass["Precision"]
+  ),
+  Specificity = c(
+    cm_tr$byClass["Specificity"],
+    cm_val$byClass["Specificity"]
+  ),
+  Recall = c(
+    cm_tr$byClass["Sensitivity"],
+    cm_val$byClass["Sensitivity"]
+  ),
+  F1 = c(
+    cm_tr$byClass["F1"],
+    cm_val$byClass["F1"]
+  ),
+  AUC = c(
+    as.numeric(auc(roc(train_cv$Exited, prob_tr))),
+    auc_val
+  )
+)
+
+print(resultats_xgb)
+
+# ---------- (Opcional) ROC ----------
+plot(roc_val, main = "ROC - Validation (XGBoost)", print.auc = TRUE)
+
+# ---------- 10) Model final amb TOT el train ----------
+tab_full <- table(train_boost$Exited)
+w_full <- ifelse(train_boost$Exited == "Yes",
+                 as.numeric(tab_full["No"]/tab_full["Yes"]),
+                 1)
+
+final_xgb <- train(
+  Exited ~ .,
+  data = train_boost,
+  method = "xgbTree",
+  trControl = ctrl,
+  tuneGrid = xgb_model$bestTune,
+  metric = "ROC",
+  weights = w_full,
+  verbosity = 0
+)
+
+# ---------- 11) Predicció TEST Kaggle ----------
+prob_te <- predict(final_xgb, test_boost, type = "prob")[,"Yes"]
+pred_te <- factor(ifelse(prob_te >= best_t, "Yes", "No"),
+                  levels = c("No","Yes"))
+
+submission <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_te
+)
+
+write.csv(submission,
+          "submission_xgb_f1_academic.csv",
+          row.names = FALSE)
+
+# ---------- Control distribució ----------
+print(table(pred_te))
+```
+
+#model
+```{r}
+# ============================================================
+# XGBOOST FINAL COMPACTE (acadèmic)
+# CV early stopping + validació 70/30
+# threshold MAX F1 + TAULA TRAIN / TEST + Kaggle
+# ============================================================
+
+library(dplyr)
+library(caret)
+library(Matrix)
+library(xgboost)
+library(pROC)
+
+set.seed(2025)
+
+# =========================
+# 0) Llegir dades i tipus
+# =========================
+dades <- read.csv2("dades_imputades.csv", sep = ",", header = TRUE)
+dades$Balance   <- as.numeric(dades$Balance)
+dades$Geography <- factor(dades$Geography)
+dades$Gender    <- factor(dades$Gender)
+
+# =========================
+# 1) Split train / test Kaggle
+# =========================
+df_tr <- dades %>% filter(Group == "train")
+df_te <- dades %>% filter(Group == "test")
+
+vars_x <- c("Geography","Balance","Age","IsActiveMember",
+            "NumOfProducts","NetPromoterScore","Gender")
+
+# Target
+y_fac <- factor(
+  ifelse(as.character(df_tr$Exited) %in% c("1","Yes","TRUE","yes",1),
+         "Yes","No"),
+  levels = c("No","Yes")
+)
+y <- ifelse(y_fac == "Yes", 1, 0)
+
+# =========================
+# 2) Dummies + escalat (fit només amb train)
+# =========================
+dmy <- dummyVars(~ ., data = df_tr[, vars_x], fullRank = TRUE)
+X_tr <- as.data.frame(predict(dmy, df_tr[, vars_x]))
+X_te <- as.data.frame(predict(dmy, df_te[, vars_x]))
+X_te <- X_te[, colnames(X_tr), drop = FALSE]
+
+pp <- preProcess(X_tr, method = c("center","scale"))
+X_tr <- predict(pp, X_tr)
+X_te <- predict(pp, X_te)
+
+# NZV
+nzv <- nearZeroVar(X_tr)
+if (length(nzv) > 0) {
+  X_tr <- X_tr[, -nzv, drop = FALSE]
+  X_te <- X_te[, -nzv, drop = FALSE]
+}
+
+# NA / Inf → mediana train
+X_tr[!is.finite(as.matrix(X_tr))] <- NA
+X_te[!is.finite(as.matrix(X_te))] <- NA
+meds <- sapply(X_tr, median, na.rm = TRUE)
+for (v in names(X_tr)) {
+  X_tr[[v]][is.na(X_tr[[v]])] <- meds[[v]]
+  X_te[[v]][is.na(X_te[[v]])] <- meds[[v]]
+}
+
+Xtr_m <- Matrix(as.matrix(X_tr), sparse = TRUE)
+Xte_m <- Matrix(as.matrix(X_te), sparse = TRUE)
+
+# =========================
+# 3) Pesos (desbalanceig)
+# =========================
+scale_pos_weight <- sum(y == 0) / sum(y == 1)
+
+params <- list(
+  booster = "gbtree",
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  eta = 0.08,
+  max_depth = 5,
+  min_child_weight = 1,
+  subsample = 0.85,
+  colsample_bytree = 0.85,
+  gamma = 0,
+  scale_pos_weight = scale_pos_weight
+)
+
+# =========================
+# 4) CV + early stopping
+# =========================
+dtrain_all <- xgb.DMatrix(Xtr_m, label = y)
+
+cv <- xgb.cv(
+  params = params,
+  data = dtrain_all,
+  nrounds = 2000,
+  nfold = 5,
+  stratified = TRUE,
+  early_stopping_rounds = 50,
+  verbose = 0
+)
+
+best_nrounds <- cv$best_iteration
+
+# =========================
+# 5) Validació 70/30 (TRAIN / TEST interns)
+# =========================
+set.seed(123)
+idx <- createDataPartition(y_fac, p = 0.7, list = FALSE)
+
+X_in  <- Matrix(as.matrix(X_tr[idx, ]),  sparse = TRUE)
+X_val <- Matrix(as.matrix(X_tr[-idx, ]), sparse = TRUE)
+y_in  <- y[idx]
+y_val <- y[-idx]
+
+d_in  <- xgb.DMatrix(X_in,  label = y_in)
+d_val <- xgb.DMatrix(X_val, label = y_val)
+
+xgb_in <- xgb.train(
+  params = params,
+  data = d_in,
+  nrounds = best_nrounds,
+  verbose = 0
+)
+
+# =========================
+# 6) PREDICCIONS TRAIN / TEST
+# =========================
+prob_train <- predict(xgb_in, d_in)
+prob_testv <- predict(xgb_in, d_val)
+
+y_train_fac <- factor(ifelse(y_in == 1,"Yes","No"), levels=c("No","Yes"))
+y_test_fac  <- factor(ifelse(y_val== 1,"Yes","No"), levels=c("No","Yes"))
+
+# =========================
+# 7) Threshold òptim (MAX F1 sobre TEST)
+# =========================
+thresholds <- seq(0.15, 0.60, by = 0.01)
+f1_vals <- sapply(thresholds, function(t){
+  pred <- factor(ifelse(prob_testv >= t,"Yes","No"), levels=c("No","Yes"))
+  confusionMatrix(pred, y_test_fac, positive="Yes")$byClass["F1"]
+})
+best_t <- thresholds[which.max(f1_vals)]
+cat("Threshold òptim (MAX F1):", best_t, "\n")
+
+# =========================
+# 8) Confusion matrices
+# =========================
+pred_train <- factor(ifelse(prob_train >= best_t,"Yes","No"), levels=c("No","Yes"))
+pred_test  <- factor(ifelse(prob_testv >= best_t,"Yes","No"), levels=c("No","Yes"))
+
+cm_train <- confusionMatrix(pred_train, y_train_fac, positive="Yes")
+cm_test  <- confusionMatrix(pred_test,  y_test_fac,  positive="Yes")
+
+# ROC + AUC (TEST)
+roc_test <- roc(y_test_fac, prob_testv, levels=c("No","Yes"))
+auc_test <- as.numeric(auc(roc_test))
+
+# =========================
+# 9) TAULA FINAL TRAIN / TEST
+# =========================
+resultats_xgb <- data.frame(
+  Dataset = c("Train","Test"),
+  Accuracy = c(cm_train$overall["Accuracy"], cm_test$overall["Accuracy"]),
+  Precision = c(cm_train$byClass["Precision"], cm_test$byClass["Precision"]),
+  Recall = c(cm_train$byClass["Recall"], cm_test$byClass["Recall"]),
+  F1 = c(cm_train$byClass["F1"], cm_test$byClass["F1"]),
+  Kappa = c(cm_train$overall["Kappa"], cm_test$overall["Kappa"]),
+  AUC = c(NA, auc_test)
+)
+
+print(resultats_xgb)
+
+# =========================
+# 10) Model FINAL (TOT el train) + Kaggle
+# =========================
+xgb_final <- xgb.train(
+  params = params,
+  data = dtrain_all,
+  nrounds = best_nrounds,
+  verbose = 0
+)
+
+prob_kaggle <- predict(xgb_final, xgb.DMatrix(Xte_m))
+pred_kaggle <- ifelse(prob_kaggle >= best_t,"Yes","No")
+
+submission <- data.frame(
+  ID = df_te$ID,
+  Exited = pred_kaggle
+)
+
+write.csv(submission,
+          "xgboost_submission_f1_opt.csv",
+          row.names = FALSE)
+
+cat("Submissió creada amb threshold =", best_t, "\n")
+
+```
+
